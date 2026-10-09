@@ -1,0 +1,1174 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Indodax Trading Bot</title>
+<style>
+  :root {
+    --bg: #0f1219; --panel: #171b25; --panel2: #1e2330; --line: #2a3040;
+    --text: #e6e9ef; --muted: #8b93a7; --green: #22c55e; --red: #ef4444;
+    --amber: #f59e0b; --blue: #3b82f6; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 14px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .pill { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.live { background: #7f1d1d; color: #fecaca; }
+  .pill.sim { background: #1e3a8a; color: #bfdbfe; }
+  .pill.ok { background: #14532d; color: #bbf7d0; }
+  .pill.halt { background: #78350f; color: #fde68a; }
+  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .big { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .pos { color: var(--green); } .neg { color: var(--red); } .warn { color: var(--amber); }
+  section { margin-top: 22px; }
+  section > h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    padding: 7px 13px; border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  button:hover { background: #262c3b; }
+  button.danger { background: #7f1d1d; border-color: #991b1b; color: #fecaca; }
+  button.danger:hover { background: #991b1b; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  input[type=password], input[type=text] {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    padding: 7px 10px; border-radius: 7px; font-size: 13px;
+  }
+  #chart { width: 100%; height: 220px; display: block; }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  .alert { background: #422006; border: 1px solid #78350f; color: #fde68a; padding: 10px 14px; border-radius: var(--radius); margin-bottom: 14px; }
+  .alert.crit { background: #450a0a; border-color: #7f1d1d; color: #fecaca; }
+  .muted { color: var(--muted); }
+
+  /* ── Navigasi tab ──────────────────────────────────────────────────────
+     Dashboard ini punya empat kelompok fungsi yang dipakai pada waktu yang
+     berbeda: memantau (tiap hari), mendiagnosa (saat bot pasif), mengukur
+     (sebelum mengubah apa pun), dan mengatur. Menumpuk semuanya dalam satu
+     gulungan membuat yang jarang dipakai mengubur yang sering dipakai. */
+  nav.tabs { display: flex; gap: 2px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav.tabs button {
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    border-radius: 0; padding: 11px 15px; color: var(--muted); font-weight: 600; white-space: nowrap;
+  }
+  nav.tabs button:hover { background: var(--panel2); color: var(--text); }
+  nav.tabs button.active { color: var(--text); border-bottom-color: var(--blue); background: transparent; }
+
+  /* ── Formulir ───────────────────────────────────────────────────────── */
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field > label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  input[type=number], select {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    padding: 7px 10px; border-radius: 7px; font-size: 13px;
+  }
+  .check { display: flex; align-items: center; gap: 7px; font-size: 13px; padding-bottom: 7px; }
+  .check input { accent-color: var(--blue); width: 15px; height: 15px; }
+  button.primary { background: #1d4ed8; border-color: #2563eb; color: #fff; }
+  button.primary:hover { background: #2563eb; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Verdict & bar ──────────────────────────────────────────────────── */
+  .verdict { padding: 12px 15px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel2); margin-bottom: 14px; line-height: 1.55; }
+  .verdict.good { border-color: #14532d; background: #052e16; color: #bbf7d0; }
+  .verdict.bad { border-color: #7f1d1d; background: #450a0a; color: #fecaca; }
+  .verdict.mid { border-color: #78350f; background: #422006; color: #fde68a; }
+  .bar { height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; min-width: 80px; }
+  .bar > span { display: block; height: 100%; background: var(--blue); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Indodax Trading Bot</h1>
+  <span id="mode" class="pill sim">—</span>
+  <span id="state" class="pill ok">—</span>
+  <span id="strategy" class="muted" style="font-size:12px"></span>
+  <span style="flex:1"></span>
+  <input type="password" id="apikey" placeholder="API key (jika diperlukan)" style="width:200px" />
+  <button onclick="refresh()">Muat ulang</button>
+</header>
+
+<nav class="tabs">
+  <button data-tab="monitor" class="active">Monitor</button>
+  <button data-tab="diagnosa">Diagnosa</button>
+  <button data-tab="backtest">Backtest</button>
+  <button data-tab="strategi">Strategi &amp; Config</button>
+</nav>
+
+<main>
+  <div id="alerts"></div>
+
+<div class="panel" id="tab-monitor">
+  <div class="grid">
+    <div class="card"><h3>Ekuitas</h3><div class="big" id="equity">—</div><div class="sub" id="equitySub"></div></div>
+    <div class="card"><h3>P&amp;L Belum Terealisasi</h3><div class="big" id="unreal">—</div><div class="sub" id="unrealSub"></div></div>
+    <div class="card"><h3>Drawdown</h3><div class="big" id="dd">—</div><div class="sub" id="ddSub"></div></div>
+    <div class="card"><h3>Hari Ini</h3><div class="big" id="todayPnl">—</div><div class="sub" id="todaySub"></div></div>
+  </div>
+
+  <section>
+    <h2>Kurva Ekuitas (30 hari)</h2>
+    <div class="card"><canvas id="chart"></canvas><div class="sub" id="chartSub"></div></div>
+  </section>
+
+  <section>
+    <h2>Kontrol</h2>
+    <div class="toolbar">
+      <button onclick="post('/api/control/pause')">Jeda entry baru</button>
+      <button onclick="post('/api/control/resume')">Lanjutkan</button>
+      <button onclick="post('/api/control/run-cycle')">Jalankan siklus</button>
+      <button onclick="post('/api/control/reconcile')">Rekonsiliasi</button>
+      <button onclick="post('/api/control/recover')">Pulihkan posisi gagal</button>
+      <button onclick="post('/api/analysis/run')">Analisis pasar</button>
+      <button class="danger" onclick="closeAll()">Tutup semua posisi</button>
+    </div>
+  </section>
+
+
+  <section>
+    <h2>Market Overview</h2>
+    <div class="card" style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Pair</th><th>Harga</th><th>Tren</th><th>Regime</th><th>Struktur</th>
+          <th>RSI</th><th>Volume</th><th>ATR</th><th>Skor</th><th>Sinyal</th>
+        </tr></thead>
+        <tbody id="overview"><tr><td colspan="10" class="empty">Memuat…</td></tr></tbody>
+      </table>
+      <div class="sub" style="margin-top:8px">
+        Skor adalah nilai kualitas dari rule engine, BUKAN peluang profit.
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Kesehatan Sistem</h2>
+    <div class="grid" id="health"></div>
+  </section>
+
+  <section>
+    <h2>Posisi Terbuka</h2>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>#</th><th>Pair</th><th class="num">Entry</th><th class="num">Sekarang</th>
+        <th class="num">Nilai</th><th class="num">P&amp;L</th><th class="num">R</th><th></th>
+      </tr></thead>
+      <tbody id="positions"><tr><td colspan="8" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Performa</h2>
+    <div class="grid" id="perf"></div>
+  </section>
+
+  <section>
+    <h2>Sinyal Terbaru</h2>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>Waktu</th><th>Pair</th><th>Aksi</th><th class="num">Kuat</th>
+        <th class="num">RSI</th><th class="num">ADX</th><th>Regime</th><th>Ditahan oleh</th>
+      </tr></thead>
+      <tbody id="signals"><tr><td colspan="8" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Riwayat Trade</h2>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>#</th><th>Pair</th><th>Status</th><th class="num">Entry</th><th class="num">Exit</th>
+        <th class="num">P&amp;L</th><th class="num">R</th><th>Alasan</th><th>Ditutup</th>
+      </tr></thead>
+      <tbody id="trades"><tr><td colspan="9" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+  </section>
+</div><!-- /tab-monitor -->
+
+<!-- ══════════════════════ DIAGNOSA ══════════════════════════════════════
+     Menjawab satu pertanyaan: kenapa bot tidak membuka posisi. Tanpa panel
+     ini, "tidak ada peluang" dan "filter kelewat ketat" terlihat sama persis
+     dari log. -->
+<div class="panel" id="tab-diagnosa" hidden>
+  <section>
+    <h2>Status Risiko</h2>
+    <div class="grid" id="riskCards"></div>
+    <div id="riskReasons"></div>
+  </section>
+
+  <section>
+    <h2>Kenapa Bot Tidak Masuk Posisi</h2>
+    <div class="row" style="margin-bottom:12px">
+      <div class="field">
+        <label for="diagHours">Periode</label>
+        <select id="diagHours" onchange="loadDiagnostics()">
+          <option value="24">24 jam</option>
+          <option value="72">3 hari</option>
+          <option value="168" selected>7 hari</option>
+          <option value="720">30 hari</option>
+        </select>
+      </div>
+      <button onclick="loadDiagnostics()">Muat ulang</button>
+    </div>
+
+    <div id="diagSummary"></div>
+
+    <h3 style="font-size:13px;margin:16px 0 8px">Filter strategi yang menahan</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Alasan</th><th class="num">Porsi</th><th style="width:180px"></th><th class="num">Jumlah</th></tr></thead>
+      <tbody id="diagBlockers"><tr><td colspan="4" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+
+    <h3 style="font-size:13px;margin:16px 0 8px">Sinyal kuat yang tertahan</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Waktu</th><th>Pair</th><th class="num">Kekuatan</th><th>Ditahan oleh</th></tr></thead>
+      <tbody id="diagNear"><tr><td colspan="4" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Penolakan Market Intelligence</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Alasan</th><th class="num">Jumlah</th></tr></thead>
+      <tbody id="miBlockers"><tr><td colspan="2" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+    <div class="note">
+      Market Intelligence hanya bisa MENOLAK sinyal, tidak pernah membuatnya.
+      Penolakan terbanyak memberi tahu ambang mana yang paling mengikat.
+    </div>
+  </section>
+
+  <section>
+    <h2>Distribusi Skor</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Bucket skor</th><th class="num">Analisis</th><th style="width:200px"></th><th class="num">Dieksekusi</th><th class="num">Trade</th><th class="num">Win rate</th><th class="num">Ekspektasi R</th></tr></thead>
+      <tbody id="miDist"><tr><td colspan="7" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+    <div class="note" id="miDistNote"></div>
+  </section>
+</div><!-- /tab-diagnosa -->
+
+<!-- ══════════════════════ BACKTEST ══════════════════════════════════════
+     Satu-satunya alat yang bisa menjawab "strategi ini layak atau tidak".
+     Sebelumnya hanya bisa dipakai dengan menulis JSON di curl. -->
+<div class="panel" id="tab-backtest" hidden>
+  <section>
+    <h2>Jalankan Backtest</h2>
+    <div class="card">
+      <div class="row">
+        <div class="field" style="min-width:230px">
+          <label for="btPairs">Pair (pisahkan koma)</label>
+          <input type="text" id="btPairs" value="btcidr,ethidr" />
+        </div>
+        <div class="field">
+          <label for="btStrategy">Strategi</label>
+          <select id="btStrategy"></select>
+        </div>
+        <div class="field">
+          <label for="btTf">Timeframe</label>
+          <select id="btTf">
+            <option value="15">15 menit</option>
+            <option value="30">30 menit</option>
+            <option value="60" selected>1 jam</option>
+            <option value="240">4 jam</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="btBars">Jumlah bar</label>
+          <input type="number" id="btBars" value="3000" min="300" max="5000" step="100" style="width:110px" />
+        </div>
+        <div class="field">
+          <label for="btCapital">Modal (IDR)</label>
+          <input type="number" id="btCapital" value="10000000" step="1000000" style="width:140px" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label class="check"><input type="checkbox" id="btMaker" checked /> Entry maker (fee separuh)</label>
+        <label class="check"><input type="checkbox" id="btMi" checked /> Pakai Market Intelligence</label>
+        <span style="flex:1"></span>
+        <button class="primary" id="btRun" onclick="runBacktest()">Jalankan Backtest</button>
+        <button id="btWf" onclick="runWalkForward()">Walk-Forward</button>
+      </div>
+      <div class="note">
+        Walk-forward membagi data jadi beberapa jendela, mencari parameter
+        terbaik pada tiap bagian awal, lalu mengujinya pada data yang belum
+        pernah dilihat. Hanya inilah yang bisa membedakan edge nyata dari
+        parameter yang kebetulan cocok dengan masa lalu — dan ia butuh waktu
+        beberapa menit.
+      </div>
+    </div>
+  </section>
+
+  <section id="btResultWrap" hidden>
+    <h2>Hasil</h2>
+    <div id="btVerdict"></div>
+    <div class="grid" id="btMetrics"></div>
+    <div id="btWarnings"></div>
+
+    <h3 style="font-size:13px;margin:16px 0 8px">Rincian</h3>
+    <div class="scroll"><table>
+      <thead><tr id="btDetailHead"></tr></thead>
+      <tbody id="btDetail"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Riwayat Backtest</h2>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>Waktu</th><th>Strategi</th><th>Pair</th><th class="num">TF</th><th class="num">Trade</th>
+        <th class="num">Win%</th><th class="num">Return</th><th class="num">Eksp R</th><th class="num">Max DD</th><th class="num">PF</th>
+      </tr></thead>
+      <tbody id="btHistory"><tr><td colspan="10" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+  </section>
+</div><!-- /tab-backtest -->
+
+<!-- ══════════════════════ STRATEGI & CONFIG ═════════════════════════════ -->
+<div class="panel" id="tab-strategi" hidden>
+  <section>
+    <h2>Strategi</h2>
+    <div class="grid" id="stratCards"></div>
+  </section>
+
+  <section>
+    <h2>Analisis Pair Sekarang</h2>
+    <div class="row" style="margin-bottom:12px">
+      <div class="field">
+        <label for="scanPair">Pair</label>
+        <input type="text" id="scanPair" value="btcidr" style="width:140px" />
+      </div>
+      <button onclick="explainPair()">Jelaskan</button>
+    </div>
+    <div id="scanResult"></div>
+  </section>
+
+  <section>
+    <h2>Audit Konfigurasi</h2>
+    <div id="cfgAudit"><div class="verdict">Memuat…</div></div>
+    <div class="note">
+      Berkas <code>.env</code> bisa tertinggal berbulan-bulan di belakang kode
+      tanpa satu pun gejala — bot tetap menyala, hanya saja memakai default kode
+      alih-alih niat Anda. Panel ini menyatakannya.
+    </div>
+  </section>
+
+  <section>
+    <h2>Parameter Aktif</h2>
+    <div class="row" style="margin-bottom:12px">
+      <div class="field" style="min-width:220px">
+        <label for="cfgKey">Kunci</label>
+        <input type="text" id="cfgKey" placeholder="MIN_ADX" />
+      </div>
+      <div class="field">
+        <label for="cfgVal">Nilai baru</label>
+        <input type="text" id="cfgVal" placeholder="18" style="width:120px" />
+      </div>
+      <button onclick="saveConfig()">Simpan override</button>
+    </div>
+    <div class="note" style="margin-bottom:12px">
+      Override tersimpan di database dan berlaku tanpa restart. Ubah ambang
+      HANYA setelah backtest membuktikan ekspektasinya naik — bukan karena bot
+      terlihat terlalu pasif.
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Parameter</th><th>Nilai</th></tr></thead>
+      <tbody id="cfgTable"><tr><td colspan="2" class="empty">Memuat…</td></tr></tbody>
+    </table></div>
+  </section>
+</div><!-- /tab-strategi -->
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY_STORE = 'indodax-bot-api-key';
+const TAB_STORE = 'indodax-bot-tab';
+
+// Kunci disimpan hanya di browser pengguna, tidak pernah dikirim ke pihak lain.
+try { $('apikey').value = localStorage.getItem(KEY_STORE) || ''; } catch {}
+$('apikey').addEventListener('change', (e) => {
+  try { localStorage.setItem(KEY_STORE, e.target.value); } catch {}
+  refresh();
+});
+
+async function api(path, opts = {}) {
+  const key = $('apikey').value;
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(key ? { 'x-api-key': key } : {}) },
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+async function post(path) {
+  try {
+    const r = await api(path, { method: 'POST' });
+    alert(JSON.stringify(r, null, 2).slice(0, 800));
+    refresh();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function closeAll() {
+  if (!confirm('Tutup SEMUA posisi terbuka sekarang?')) return;
+  await post('/api/trades/close-all');
+}
+
+async function closeOne(id) {
+  if (!confirm('Tutup posisi #' + id + '?')) return;
+  await post('/api/trades/' + id + '/close');
+}
+
+const idr = (v) => 'Rp ' + Math.round(v || 0).toLocaleString('id-ID');
+const cls = (v) => (v > 0 ? 'pos' : v < 0 ? 'neg' : '');
+const price = (v) => (v >= 1000 ? Math.round(v).toLocaleString('id-ID') : (v || 0).toPrecision(6));
+const time = (t) => new Date(t).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'short', timeStyle: 'short' });
+
+// ─── Navigasi tab ──────────────────────────────────────────────────────────
+
+const TABS = ['monitor', 'diagnosa', 'backtest', 'strategi'];
+let activeTab = 'monitor';
+
+/** Loader per tab; dipanggil saat tab dibuka, bukan saat halaman dimuat. */
+const TAB_LOADERS = {
+  diagnosa: loadDiagnostics,
+  backtest: loadBacktestTab,
+  strategi: loadStrategyTab,
+};
+const tabLoaded = new Set();
+
+function showTab(name) {
+  if (!TABS.includes(name)) return;
+  activeTab = name;
+
+  for (const t of TABS) $('tab-' + t).hidden = t !== name;
+  document.querySelectorAll('nav.tabs button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+
+  try { localStorage.setItem(TAB_STORE, name); } catch {}
+
+  // Dimuat sekali saat pertama dibuka; sesudahnya hanya atas permintaan.
+  if (TAB_LOADERS[name] && !tabLoaded.has(name)) {
+    tabLoaded.add(name);
+    TAB_LOADERS[name]();
+  }
+}
+
+document.querySelectorAll('nav.tabs button').forEach((b) => {
+  b.addEventListener('click', () => showTab(b.dataset.tab));
+});
+
+async function refresh() {
+  // Auto-refresh hanya menyentuh tab Monitor. Backtest tidak boleh berjalan
+  // sendiri (mahal), dan diagnosa tidak berubah tiap 30 detik.
+  if (activeTab !== 'monitor') return;
+  try {
+    const [status, portfolio, curve, perf, signals, trades, failed] = await Promise.all([
+      api('/api/status'), api('/api/portfolio'), api('/api/equity-curve?days=30'),
+      api('/api/trades/performance'), api('/api/signals?limit=20'),
+      api('/api/trades?limit=25'), api('/api/trades/failed'),
+    ]);
+
+    renderStatus(status, portfolio, failed);
+    renderChart(curve);
+    renderPositions(portfolio);
+    renderPerf(perf);
+    renderSignals(signals);
+    renderTrades(trades);
+
+    // Market Intelligence dan health dimuat TERPISAH dan tidak ditunggu:
+    // analisis multi-timeframe memanggil exchange beberapa kali dan bisa
+    // memakan beberapa detik. Menunggunya di sini akan membuat seluruh
+    // dashboard terasa lambat hanya karena satu panel.
+    loadHealth();
+    loadOverview();
+  } catch (e) {
+    $('alerts').innerHTML = `<div class="alert crit">Gagal memuat data: ${escapeHtml(e.message)}<br>
+      <span class="muted">Jika DASHBOARD_API_KEY diaktifkan, isi kunci di kanan atas.</span></div>`;
+  }
+}
+
+function renderStatus(s, p, failed) {
+  $('mode').textContent = s.mode;
+  $('mode').className = 'pill ' + (s.mode === 'LIVE' ? 'live' : 'sim');
+  $('state').textContent = s.status === 'HALTED' ? 'DIHENTIKAN' : 'AKTIF';
+  $('state').className = 'pill ' + (s.status === 'HALTED' ? 'halt' : 'ok');
+  $('strategy').textContent = s.strategy;
+
+  const alerts = [];
+  if (s.haltReasons?.length) {
+    alerts.push(`<div class="alert"><b>Entry dihentikan:</b><br>${s.haltReasons.map(escapeHtml).join('<br>')}</div>`);
+  }
+  if (p.degraded) {
+    alerts.push(`<div class="alert">Sebagian data portofolio tidak terbaca (saldo atau harga). Angka di bawah mungkin tidak lengkap.</div>`);
+  }
+  if (failed?.length) {
+    alerts.push(`<div class="alert crit"><b>${failed.length} posisi gagal ditutup</b> dan butuh penanganan manual di Indodax:<br>
+      ${failed.map((t) => `#${t.id} ${t.pair.toUpperCase()} — ${escapeHtml(t.lastError || '')}`).join('<br>')}</div>`);
+  }
+  $('alerts').innerHTML = alerts.join('');
+
+  $('equity').textContent = idr(s.portfolio.equity);
+  $('equitySub').textContent = `Kas ${idr(s.portfolio.cash)} · Posisi ${idr(s.portfolio.positionsValue)}`;
+
+  $('unreal').textContent = idr(s.portfolio.unrealizedPnl);
+  $('unreal').className = 'big ' + cls(s.portfolio.unrealizedPnl);
+  $('unrealSub').textContent = `${s.portfolio.openPositions} posisi terbuka`;
+
+  $('dd').textContent = s.portfolio.drawdownPercent.toFixed(2) + '%';
+  $('dd').className = 'big ' + (s.portfolio.drawdownPercent > 10 ? 'warn' : '');
+  $('ddSub').textContent = 'dari puncak ekuitas';
+
+  $('todayPnl').textContent = idr(s.today.totalPnL);
+  $('todayPnl').className = 'big ' + cls(s.today.totalPnL);
+  $('todaySub').textContent =
+    `${s.today.totalTrades} trade · ${s.today.winTrades}M/${s.today.lossTrades}K · fee ${idr(s.today.totalFees)}`;
+}
+
+function renderChart(data) {
+  const canvas = $('chart');
+  const pts = data.points || [];
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = 220;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  $('chartSub').textContent = pts.length
+    ? `Drawdown maks ${data.maxDrawdownPercent?.toFixed(2)}% · sekarang ${data.currentDrawdownPercent?.toFixed(2)}%`
+    : '';
+
+  if (pts.length < 2) {
+    ctx.fillStyle = '#8b93a7'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Belum cukup data ekuitas — snapshot diambil tiap 15 menit', w / 2, h / 2);
+    return;
+  }
+
+  const vals = pts.map((p) => p.equityIdr);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const pad = (max - min) * 0.1 || max * 0.01 || 1;
+  const lo = min - pad, hi = max + pad;
+  const x = (i) => (i / (pts.length - 1)) * (w - 50) + 45;
+  const y = (v) => h - 22 - ((v - lo) / (hi - lo)) * (h - 42);
+
+  // Garis bantu
+  ctx.strokeStyle = '#2a3040'; ctx.fillStyle = '#8b93a7';
+  ctx.font = '10px sans-serif'; ctx.textAlign = 'right'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + ((hi - lo) * i) / 3, yy = y(v);
+    ctx.beginPath(); ctx.moveTo(45, yy); ctx.lineTo(w - 5, yy); ctx.stroke();
+    ctx.fillText((v / 1e6).toFixed(1) + 'jt', 41, yy + 3);
+  }
+
+  const up = vals[vals.length - 1] >= vals[0];
+  ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
+  ctx.lineWidth = 2; ctx.beginPath();
+  pts.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p.equityIdr)) : ctx.moveTo(x(i), y(p.equityIdr))));
+  ctx.stroke();
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, up ? 'rgba(34,197,94,.20)' : 'rgba(239,68,68,.20)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.lineTo(x(pts.length - 1), h - 22); ctx.lineTo(x(0), h - 22); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+}
+
+function renderPositions(p) {
+  const rows = (p.positions || []).map((x) => `
+    <tr>
+      <td>#${x.tradeId}</td><td><b>${x.pair.toUpperCase()}</b></td>
+      <td class="num">${price(x.entryPrice)}</td><td class="num">${price(x.currentPrice)}</td>
+      <td class="num">${idr(x.valueIdr)}</td>
+      <td class="num ${cls(x.unrealizedPnl)}">${idr(x.unrealizedPnl)}<br>
+        <span class="sub">${x.unrealizedPercent.toFixed(2)}%</span></td>
+      <td class="num ${cls(x.rMultiple)}">${x.rMultiple.toFixed(2)}R</td>
+      <td><button onclick="closeOne(${x.tradeId})">Tutup</button></td>
+    </tr>`);
+  $('positions').innerHTML = rows.join('') || '<tr><td colspan="8" class="empty">Tidak ada posisi terbuka</td></tr>';
+}
+
+function renderPerf(p) {
+  if (!p.totalTrades) {
+    $('perf').innerHTML = '<div class="card"><div class="empty">Belum ada trade yang selesai</div></div>';
+    return;
+  }
+  const card = (label, value, sub = '', klass = '') =>
+    `<div class="card"><h3>${label}</h3><div class="big ${klass}">${value}</div><div class="sub">${sub}</div></div>`;
+
+  $('perf').innerHTML = [
+    card('Total Trade', p.totalTrades, `${p.winTrades} menang · ${p.lossTrades} kalah`),
+    card('Win Rate', p.winRate + '%', `rata-rata durasi ${p.avgHoldingHours} jam`),
+    card('P&L Bersih', idr(p.totalPnL), `fee ${idr(p.totalFees)}`, cls(p.totalPnL)),
+    card('Profit Factor', p.profitFactor ?? 'n/a', 'profit kotor ÷ rugi kotor'),
+    card('Ekspektasi', (p.expectancyR >= 0 ? '+' : '') + p.expectancyR + 'R', 'per trade'),
+    card('Beban Fee', (p.feeDragPercent ?? 0) + '%', 'dari profit kotor',
+      (p.feeDragPercent ?? 0) > 40 ? 'warn' : ''),
+  ].join('');
+}
+
+function renderSignals(rows) {
+  $('signals').innerHTML = rows.map((s) => `
+    <tr>
+      <td class="muted">${time(s.createdAt)}</td>
+      <td><b>${s.pair.toUpperCase()}</b></td>
+      <td class="${s.action === 'BUY' ? 'pos' : s.action === 'SELL' ? 'neg' : 'muted'}">${s.action}</td>
+      <td class="num">${s.strength}</td>
+      <td class="num">${(s.rsi ?? 0).toFixed(1)}</td>
+      <td class="num">${(s.adx ?? 0).toFixed(1)}</td>
+      <td class="muted">${s.regime || '—'}</td>
+      <td class="muted" style="white-space:normal;max-width:340px">${escapeHtml(s.blockedBy || '—')}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">Belum ada sinyal</td></tr>';
+}
+
+function renderTrades(rows) {
+  $('trades').innerHTML = rows.map((t) => `
+    <tr>
+      <td>#${t.id}</td><td><b>${t.pair.toUpperCase()}</b></td>
+      <td class="${t.status === 'FAILED' ? 'neg' : 'muted'}">${t.status}</td>
+      <td class="num">${price(t.entryPrice)}</td>
+      <td class="num">${t.exitPrice ? price(t.exitPrice) : '—'}</td>
+      <td class="num ${cls(t.profitLoss)}">${t.profitLoss != null ? idr(t.profitLoss) : '—'}</td>
+      <td class="num ${cls(t.rMultiple)}">${t.rMultiple != null ? t.rMultiple.toFixed(2) + 'R' : '—'}</td>
+      <td class="muted">${escapeHtml(t.closeReason || '—')}</td>
+      <td class="muted">${t.closedAt ? time(t.closedAt) : '—'}</td>
+    </tr>`).join('') || '<tr><td colspan="9" class="empty">Belum ada trade</td></tr>';
+}
+
+/**
+ * Market Overview (bagian 17 spesifikasi).
+ *
+ * Dimuat terpisah dari refresh utama: analisis multi-timeframe memanggil
+ * exchange beberapa kali per pair dan bisa memakan beberapa detik. Menunggunya
+ * di dalam refresh akan membuat seluruh dashboard terasa lambat hanya karena
+ * satu panel.
+ */
+async function loadOverview() {
+  const body = $('overview');
+  try {
+    const rows = await api('/api/intelligence/overview');
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="10" class="empty">Tidak ada pair untuk dianalisis</td></tr>';
+      return;
+    }
+    body.innerHTML = rows
+      .map((r) => {
+        const vol = r.relativeVolume === null ? '—' : ((r.relativeVolume - 1) * 100).toFixed(0) + '%';
+        const rsi = r.rsi === null ? '—' : r.rsi.toFixed(0);
+        const atr = r.atrPercent === null ? '—' : r.atrPercent.toFixed(2) + '%';
+        const signalClass =
+          r.signal === 'HIGH_QUALITY_SETUP' ? 'pos' : r.signal === 'NO_TRADE' ? 'neg' : '';
+        // Alasan penolakan ditaruh di tooltip: operator perlu tahu MENGAPA
+        // sebuah pair ditandai NO TRADE, tanpa membuat tabelnya penuh.
+        const title = r.blockers && r.blockers.length ? escapeHtml(r.blockers.join(' | ')) : '';
+        return [
+          '<tr>',
+          '<td><strong>' + escapeHtml(r.pair) + '</strong></td>',
+          '<td>' + (r.price === null ? '—' : price(r.price)) + '</td>',
+          '<td>' + escapeHtml(r.trend) + '</td>',
+          '<td>' + escapeHtml(r.regime) + '</td>',
+          '<td>' + escapeHtml(r.structure) + '</td>',
+          '<td>' + rsi + '</td>',
+          '<td>' + vol + '</td>',
+          '<td>' + atr + '</td>',
+          '<td><strong>' + r.score + '/100</strong></td>',
+          '<td class="' + signalClass + '" title="' + title + '">' +
+            escapeHtml(r.signal.replace(/_/g, ' ')) + '</td>',
+          '</tr>',
+        ].join('');
+      })
+      .join('');
+  } catch (e) {
+    body.innerHTML =
+      '<tr><td colspan="10" class="empty">Gagal memuat: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
+/** Kesehatan komponen operasional (bagian 24 spesifikasi). */
+async function loadHealth() {
+  try {
+    const h = await api('/api/health');
+    const badge = (status) => (status === 'OK' ? 'pos' : status === 'DEGRADED' ? '' : 'neg');
+
+    const cards = h.components.map((c) =>
+      [
+        '<div class="card">',
+        '<h3>' + escapeHtml(c.component) + '</h3>',
+        '<div class="big ' + badge(c.status) + '" style="font-size:18px">' +
+          escapeHtml(c.label) + '</div>',
+        '<div class="sub">' + escapeHtml(c.detail) + '</div>',
+        '</div>',
+      ].join(''),
+    );
+
+    cards.push(
+      [
+        '<div class="card">',
+        '<h3>Heartbeat</h3>',
+        '<div class="big" style="font-size:18px">' + h.heartbeatAgeSeconds + ' detik lalu</div>',
+        '<div class="sub">uptime ' + Math.round(h.uptimeSeconds / 60) + ' menit</div>',
+        '</div>',
+      ].join(''),
+    );
+
+    $('health').innerHTML = cards.join('');
+  } catch (e) {
+    $('health').innerHTML =
+      '<div class="card"><div class="empty">Gagal memuat kesehatan: ' +
+      escapeHtml(e.message) +
+      '</div></div>';
+  }
+}
+
+// ════════════════════════ DIAGNOSA ════════════════════════════════════════
+
+async function loadDiagnostics() {
+  const hours = Number($('diagHours').value) || 168;
+  const days = Math.max(1, Math.round(hours / 24));
+
+  // Tiap panel dimuat mandiri: satu yang gagal tidak boleh mengosongkan
+  // panel lain yang datanya sebenarnya berhasil diambil.
+  loadRisk();
+  loadStrategyBlockers(hours);
+  loadMiBlockers(days);
+  loadMiDistribution(days);
+}
+
+async function loadRisk() {
+  try {
+    const r = await api('/api/risk');
+    const card = (label, value, sub, klass = '') =>
+      `<div class="card"><h3>${label}</h3><div class="big ${klass}" style="font-size:19px">${value}</div><div class="sub">${sub}</div></div>`;
+
+    $('riskCards').innerHTML = [
+      card('Entry', r.halted ? 'DIHENTIKAN' : 'Diizinkan', r.halted ? `${r.reasons.length} sebab` : 'tidak ada penghalang', r.halted ? 'neg' : 'pos'),
+      card('Sisa jatah rugi harian', r.remainingDailyRiskPercent + '%', `dari batas ${r.limits.maxDailyLossPercent}%`),
+      card('Kalah beruntun', r.consecutiveLosses, `batas ${r.limits.maxConsecutiveLosses}`, r.consecutiveLosses >= r.limits.maxConsecutiveLosses ? 'neg' : ''),
+      card('Drawdown sekarang', (r.currentDrawdownPercent ?? 0).toFixed(2) + '%', `maks 90 hari ${(r.maxDrawdownPercent ?? 0).toFixed(2)}% · batas ${r.limits.maxDrawdownPercent}%`,
+        (r.currentDrawdownPercent ?? 0) >= r.limits.maxDrawdownPercent ? 'neg' : ''),
+    ].join('');
+
+    $('riskReasons').innerHTML = r.halted
+      ? `<div class="alert" style="margin-top:14px"><b>Entry dihentikan:</b><br>${r.reasons.map(escapeHtml).join('<br>')}</div>`
+      : '';
+  } catch (e) {
+    $('riskCards').innerHTML = `<div class="card"><div class="empty">Gagal: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+async function loadStrategyBlockers(hours) {
+  const body = $('diagBlockers');
+  try {
+    const r = await api('/api/signals/blockers?hours=' + hours);
+
+    if (!r.totalSignals) {
+      $('diagSummary').innerHTML =
+        `<div class="verdict mid">Belum ada sinyal tercatat dalam ${hours} jam terakhir.
+         Pastikan bot benar-benar berjalan — tanpa data, tidak ada yang bisa didiagnosa.</div>`;
+      body.innerHTML = '<tr><td colspan="4" class="empty">Tidak ada data</td></tr>';
+      $('diagNear').innerHTML = '<tr><td colspan="4" class="empty">Tidak ada data</td></tr>';
+      return;
+    }
+
+    // Kesimpulan ditulis eksplisit: angka saja tidak memberi tahu operator
+    // apakah filternya sedang melindungi atau sedang melumpuhkan.
+    const top = r.blockers[0];
+    let verdict;
+    if (r.executedSignals > 0) {
+      verdict = `<div class="verdict good">${r.executedSignals} dari ${r.totalSignals} sinyal dieksekusi. Bot bekerja normal.</div>`;
+    } else if (top && top.percentOfSignals > 80) {
+      verdict = `<div class="verdict mid"><b>Satu filter menahan ${top.percentOfSignals}% sinyal:</b> ${escapeHtml(top.reason)}<br>
+        Itu filter pengikat Anda. Longgarkan HANYA bila backtest membuktikan ekspektasinya naik.</div>`;
+    } else if (r.buySignals === 0) {
+      verdict = `<div class="verdict">Tidak ada sinyal yang lolos, dan beban penolakan terbagi rata antar beberapa filter.
+        Itu pola pasar tanpa arah — bukan filter yang kelewat ketat.</div>`;
+    } else {
+      verdict = `<div class="verdict mid">${r.buySignals} sinyal lolos filter tapi tidak satu pun dieksekusi.
+        Penyebabnya bukan filter melainkan Risk Engine atau Market Intelligence — cek panel di bawah.</div>`;
+    }
+
+    $('diagSummary').innerHTML = verdict +
+      `<div class="note">${r.totalSignals} sinyal dievaluasi · ${r.buySignals} jadi BUY · ${r.executedSignals} dieksekusi · ${r.passedFiltersNotExecuted} lolos filter tapi tak dieksekusi</div>`;
+
+    const max = Math.max(...r.blockers.map((b) => b.percentOfSignals), 1);
+    body.innerHTML = r.blockers.map((b) => `
+      <tr>
+        <td style="white-space:normal">${escapeHtml(b.reason)}</td>
+        <td class="num">${b.percentOfSignals}%</td>
+        <td><div class="bar"><span style="width:${(b.percentOfSignals / max) * 100}%"></span></div></td>
+        <td class="num">${b.count}</td>
+      </tr>`).join('');
+
+    $('diagNear').innerHTML = r.nearMisses.length
+      ? r.nearMisses.map((n) => `
+        <tr><td class="muted">${time(n.at)}</td><td><b>${escapeHtml(n.pair.toUpperCase())}</b></td>
+        <td class="num">${n.strength}</td><td style="white-space:normal">${escapeHtml(n.blockedBy)}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="empty">Tidak ada sinyal berkekuatan ≥50 yang tertahan</td></tr>';
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="4" class="empty">Gagal: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function loadMiBlockers(days) {
+  const body = $('miBlockers');
+  try {
+    const rows = await api('/api/intelligence/signals/blockers?days=' + days);
+    body.innerHTML = rows.length
+      ? rows.map((b) => `<tr><td style="white-space:normal">${escapeHtml(b.reason)}</td><td class="num">${b.count}</td></tr>`).join('')
+      : '<tr><td colspan="2" class="empty">Belum ada penolakan tercatat</td></tr>';
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="2" class="empty">Gagal: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function loadMiDistribution(days) {
+  const body = $('miDist');
+  try {
+    const rows = await api('/api/intelligence/signals/distribution?days=' + days);
+    const total = rows.reduce((s, b) => s + b.analyses, 0);
+    const max = Math.max(...rows.map((b) => b.analyses), 1);
+
+    body.innerHTML = rows.map((b) => `
+      <tr>
+        <td><b>${escapeHtml(b.bucket)}</b></td>
+        <td class="num">${b.analyses}</td>
+        <td><div class="bar"><span style="width:${(b.analyses / max) * 100}%"></span></div></td>
+        <td class="num">${b.executed}</td>
+        <td class="num">${b.trades}</td>
+        <td class="num">${b.winRate === null ? '—' : b.winRate.toFixed(1) + '%'}</td>
+        <td class="num ${cls(b.expectancyR)}">${b.expectancyR === null ? '—' : b.expectancyR.toFixed(3)}</td>
+      </tr>`).join('');
+
+    // Kolom hasil kosong bukan kerusakan — ia menunggu trade nyata untuk
+    // ditautkan. Menyatakannya mencegah kesimpulan dari tabel yang belum siap.
+    $('miDistNote').textContent = total === 0
+      ? 'Belum ada analisis tercatat. Kolom win rate dan ekspektasi baru terisi setelah ada trade yang selesai.'
+      : `${total} analisis tercatat. Kolom win rate dan ekspektasi R masih kosong sampai ada trade nyata yang bisa ditautkan ke skornya — itulah satu-satunya cara membuktikan skor tinggi benar-benar lebih menguntungkan.`;
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">Gagal: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// ════════════════════════ BACKTEST ════════════════════════════════════════
+
+async function loadBacktestTab() {
+  try {
+    const strategies = await api('/api/strategies');
+    $('btStrategy').innerHTML = strategies
+      .map((s) => `<option value="${escapeHtml(s.name)}"${s.active ? ' selected' : ''}>${escapeHtml(s.name)}</option>`)
+      .join('');
+  } catch { /* biarkan kosong; tombol tetap bisa dipakai setelah diisi manual */ }
+  loadBacktestHistory();
+}
+
+function backtestBody() {
+  return {
+    pairs: $('btPairs').value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+    strategy: $('btStrategy').value || undefined,
+    timeframe: Number($('btTf').value),
+    bars: Number($('btBars').value),
+    initialCapital: Number($('btCapital').value),
+    makerEntry: $('btMaker').checked,
+    useIntelligence: $('btMi').checked,
+  };
+}
+
+function btBusy(on, which) {
+  $('btRun').disabled = on;
+  $('btWf').disabled = on;
+  if (on) {
+    $('btResultWrap').hidden = false;
+    $('btVerdict').innerHTML = `<div class="verdict">Menjalankan ${which}… ini bisa memakan beberapa menit. Jangan tutup halaman.</div>`;
+    $('btMetrics').innerHTML = '';
+    $('btWarnings').innerHTML = '';
+    $('btDetailHead').innerHTML = '';
+    $('btDetail').innerHTML = '';
+  }
+}
+
+async function runBacktest() {
+  btBusy(true, 'backtest');
+  try {
+    const r = await api('/api/backtest/run', { method: 'POST', body: JSON.stringify(backtestBody()) });
+    renderBacktest(r);
+    loadBacktestHistory();
+  } catch (e) {
+    $('btVerdict').innerHTML = `<div class="verdict bad">Gagal: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btBusy(false);
+  }
+}
+
+function renderBacktest(r) {
+  const m = r.metrics;
+
+  // Vonis dibentuk dari ekspektasi DAN ketidakpastiannya. Ekspektasi positif
+  // yang galat bakunya lebih besar daripada nilainya tidak berarti apa-apa,
+  // dan menyajikannya sebagai kabar baik akan menyesatkan.
+  const lower = m.expectancyR - m.expectancyStdErrorR;
+  let cls_ = 'bad', msg;
+  if (m.totalTrades < 10) {
+    cls_ = 'mid';
+    msg = `Hanya ${m.totalTrades} trade — terlalu sedikit untuk disimpulkan, berapa pun angkanya.`;
+  } else if (m.expectancyR <= 0) {
+    msg = `Ekspektasi ${m.expectancyR}R per trade. Strategi ini merugi pada periode ini. Mengubah ukuran posisi tidak akan menolong — ekspektasi negatif berarti makin banyak trade makin besar kerugian.`;
+  } else if (lower <= 0) {
+    cls_ = 'mid';
+    msg = `Ekspektasi +${m.expectancyR}R tetapi galat bakunya ±${m.expectancyStdErrorR} — batas bawahnya masih negatif. Belum bisa dipercaya; butuh lebih banyak data.`;
+  } else {
+    cls_ = 'good';
+    msg = `Ekspektasi +${m.expectancyR}R (±${m.expectancyStdErrorR}) dari ${m.totalTrades} trade. Batas bawahnya masih positif. WAJIB divalidasi dengan Walk-Forward sebelum dipercaya.`;
+  }
+  $('btVerdict').innerHTML = `<div class="verdict ${cls_}">${msg}</div>`;
+
+  const card = (label, value, sub = '', klass = '') =>
+    `<div class="card"><h3>${label}</h3><div class="big ${klass}" style="font-size:19px">${value}</div><div class="sub">${sub}</div></div>`;
+
+  $('btMetrics').innerHTML = [
+    card('Trade', m.totalTrades, `${m.winTrades} menang · ${m.lossTrades} kalah`),
+    card('Win rate', m.winRate + '%', `${r.barsTested} bar diuji`),
+    card('Return', m.totalReturnPercent + '%', `setahun setara ${m.annualizedReturnPercent}%`, cls(m.totalReturnPercent)),
+    card('Ekspektasi', (m.expectancyR >= 0 ? '+' : '') + m.expectancyR + 'R', `±${m.expectancyStdErrorR} galat baku`, cls(m.expectancyR)),
+    card('Profit factor', m.profitFactor ?? '—', 'profit kotor ÷ rugi kotor'),
+    card('Max drawdown', m.maxDrawdownPercent + '%', idr(m.maxDrawdownIdr), m.maxDrawdownPercent > 20 ? 'neg' : ''),
+    // null berarti tidak ada profit kotor untuk dibagi — bukan "0% beban".
+    card('Beban fee', m.feeDragPercent === null ? '—' : m.feeDragPercent + '%',
+      m.feeDragPercent === null ? `total ${idr(m.totalFees)} · tidak ada profit kotor` : `total ${idr(m.totalFees)}`,
+      (m.feeDragPercent ?? 0) > 40 ? 'warn' : ''),
+    card('Sharpe', m.sharpeRatio, `Sortino ${m.sortinoRatio} · Calmar ${m.calmarRatio ?? '—'}`),
+  ].join('');
+
+  $('btWarnings').innerHTML = (r.warnings || []).length
+    ? `<div class="alert">${r.warnings.map(escapeHtml).join('<br>')}</div>`
+    : '';
+
+  $('btDetailHead').innerHTML =
+    '<th>Pair</th><th class="num">Trade</th><th class="num">Net P&L</th><th class="num">Win rate</th>';
+  const perPair = Object.entries(m.perPair || {});
+  $('btDetail').innerHTML = perPair.length
+    ? perPair.map(([p, v]) => `<tr><td><b>${escapeHtml(p.toUpperCase())}</b></td><td class="num">${v.trades}</td>
+        <td class="num ${cls(v.netProfit)}">${idr(v.netProfit)}</td><td class="num">${v.winRate}%</td></tr>`).join('')
+      + (m.intelligence && m.intelligence.enabled
+        ? `<tr><td colspan="4" class="muted" style="white-space:normal">Market Intelligence: ${m.intelligence.accepted} diterima, ${m.intelligence.rejected} ditolak${m.intelligence.avgScore !== null ? `, skor rata-rata ${m.intelligence.avgScore}` : ''}${(m.intelligence.topRejections || []).length ? ' — terbanyak: ' + escapeHtml(m.intelligence.topRejections.map((t) => t.reason + ' (' + t.count + 'x)').join('; ')) : ''}</td></tr>`
+        : '')
+    : '<tr><td colspan="4" class="empty">Tidak ada trade</td></tr>';
+}
+
+async function runWalkForward() {
+  btBusy(true, 'walk-forward');
+  try {
+    const r = await api('/api/backtest/walk-forward', {
+      method: 'POST',
+      body: JSON.stringify({ ...backtestBody(), windows: 3 }),
+    });
+
+    const good = r.avgOutOfSampleReturn > 0 && (r.robustnessRatio ?? 0) >= 0.6;
+    const bad = r.avgOutOfSampleReturn <= 0;
+    $('btVerdict').innerHTML =
+      `<div class="verdict ${bad ? 'bad' : good ? 'good' : 'mid'}">${escapeHtml(r.verdict)}</div>`;
+
+    const card = (label, value, sub = '', klass = '') =>
+      `<div class="card"><h3>${label}</h3><div class="big ${klass}" style="font-size:19px">${value}</div><div class="sub">${sub}</div></div>`;
+    $('btMetrics').innerHTML = [
+      card('Rata-rata in-sample', r.avgInSampleReturn + '%', 'data yang dipakai mencari parameter', cls(r.avgInSampleReturn)),
+      card('Rata-rata out-of-sample', r.avgOutOfSampleReturn + '%', 'data yang belum pernah dilihat', cls(r.avgOutOfSampleReturn)),
+      card('Rasio ketahanan', r.robustnessRatio ?? '—', 'OOS ÷ IS; di bawah 0,3 = overfitting'),
+      card('Jendela diuji', r.windows.length, 'tiap jendela periode berbeda'),
+    ].join('');
+
+    $('btWarnings').innerHTML = (r.warnings || []).length
+      ? `<div class="alert">${r.warnings.map(escapeHtml).join('<br>')}</div>` : '';
+
+    $('btDetailHead').innerHTML =
+      '<th class="num">Jendela</th><th class="num">IS return</th><th class="num">IS trade</th><th class="num">OOS return</th><th class="num">OOS trade</th><th class="num">OOS max DD</th><th>Parameter terpilih</th>';
+    $('btDetail').innerHTML = r.windows.length
+      ? r.windows.map((w) => `<tr>
+          <td class="num">${w.window}</td>
+          <td class="num ${cls(w.inSampleReturn)}">${w.inSampleReturn}%</td>
+          <td class="num">${w.inSampleTrades}</td>
+          <td class="num ${cls(w.outOfSampleReturn)}">${w.outOfSampleReturn}%</td>
+          <td class="num">${w.outOfSampleTrades}</td>
+          <td class="num">${w.outOfSampleMaxDd}%</td>
+          <td class="muted">${escapeHtml(JSON.stringify(w.bestParams))}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" class="empty">Tidak ada jendela valid</td></tr>';
+  } catch (e) {
+    $('btVerdict').innerHTML = `<div class="verdict bad">Gagal: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btBusy(false);
+  }
+}
+
+async function loadBacktestHistory() {
+  const body = $('btHistory');
+  try {
+    const rows = await api('/api/backtest/history?limit=20');
+    body.innerHTML = rows.length
+      ? rows.map((h) => `<tr>
+          <td class="muted">${time(h.createdAt)}</td>
+          <td>${escapeHtml(h.strategy)}</td>
+          <td class="muted">${escapeHtml(h.pairs)}</td>
+          <td class="num">${h.timeframe}m</td>
+          <td class="num">${h.totalTrades}</td>
+          <td class="num">${h.winRate}%</td>
+          <td class="num ${cls(h.totalReturnPercent)}">${h.totalReturnPercent}%</td>
+          <td class="num ${cls(h.expectancyR)}">${h.expectancyR}</td>
+          <td class="num">${h.maxDrawdownPercent}%</td>
+          <td class="num">${h.profitFactor || '—'}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="10" class="empty">Belum ada backtest tersimpan</td></tr>';
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="10" class="empty">Gagal: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// ════════════════════ STRATEGI & CONFIG ═══════════════════════════════════
+
+async function loadStrategyTab() {
+  loadStrategies();
+  loadConfigAudit();
+  loadConfigTable();
+}
+
+/** Audit .env: parameter mati, yang hilang, dan nilai yang bermasalah. */
+async function loadConfigAudit() {
+  const out = $('cfgAudit');
+  try {
+    const r = await api('/api/config/audit');
+
+    if (!r.findings.length) {
+      out.innerHTML = `<div class="verdict good">${escapeHtml(r.summary)} — semua parameter yang dipakai kode ada di .env.</div>`;
+      return;
+    }
+
+    const order = { CRITICAL: 0, WARNING: 1, INFO: 2 };
+    const sorted = [...r.findings].sort((a, b) => order[a.severity] - order[b.severity]);
+    const worst = sorted[0].severity;
+
+    const rows = sorted.map((f) => {
+      const tone = f.severity === 'CRITICAL' ? 'neg' : f.severity === 'WARNING' ? 'warn' : 'muted';
+      return `<tr>
+        <td class="${tone}">${escapeHtml(f.kind.replace(/_/g, ' '))}</td>
+        <td><b>${escapeHtml(f.key)}</b></td>
+        <td style="white-space:normal">${escapeHtml(f.detail)}</td>
+      </tr>`;
+    });
+
+    out.innerHTML =
+      `<div class="verdict ${worst === 'CRITICAL' ? 'bad' : worst === 'WARNING' ? 'mid' : ''}">${escapeHtml(r.summary)}</div>` +
+      `<div class="scroll"><table>
+         <thead><tr><th>Jenis</th><th>Parameter</th><th>Keterangan</th></tr></thead>
+         <tbody>${rows.join('')}</tbody>
+       </table></div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="verdict bad">Gagal memuat audit: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadStrategies() {
+  try {
+    const rows = await api('/api/strategies');
+    $('stratCards').innerHTML = rows.map((s) => `
+      <div class="card">
+        <h3>${s.active ? 'AKTIF' : 'tersedia'}</h3>
+        <div class="big ${s.active ? 'pos' : ''}" style="font-size:15px">${escapeHtml(s.name)}</div>
+        <div class="sub" style="white-space:normal">${escapeHtml(s.description)}</div>
+        ${s.active ? '' : `<button style="margin-top:10px" onclick="activateStrategy('${escapeHtml(s.name)}')">Aktifkan</button>`}
+      </div>`).join('');
+  } catch (e) {
+    $('stratCards').innerHTML = `<div class="card"><div class="empty">Gagal: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+async function activateStrategy(name) {
+  if (!confirm('Ganti strategi aktif ke ' + name + '?')) return;
+  try {
+    const r = await api('/api/strategies/' + encodeURIComponent(name) + '/activate', { method: 'POST' });
+    alert(r.message || 'Strategi diganti');
+    loadStrategies();
+    refresh();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function loadConfigTable() {
+  const body = $('cfgTable');
+  try {
+    const c = await api('/api/config');
+    const overrides = c.overrides || {};
+    const rows = Object.entries(c.params).map(([k, v]) => {
+      const val = Array.isArray(v) ? v.join(', ') : String(v);
+      return `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(val)}</td></tr>`;
+    });
+    const ovRows = Object.entries(overrides).map(([k, v]) =>
+      `<tr><td>${escapeHtml(k)} <span class="muted">(override DB)</span></td><td class="pos">${escapeHtml(String(v))}</td></tr>`);
+    body.innerHTML = [...ovRows, ...rows].join('');
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="2" class="empty">Gagal: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function saveConfig() {
+  const key = $('cfgKey').value.trim();
+  const value = $('cfgVal').value.trim();
+  if (!key || !value) { alert('Isi kunci dan nilai.'); return; }
+  if (!confirm(`Setel ${key} = ${value}?\n\nIni berlaku langsung tanpa restart.`)) return;
+  try {
+    await api('/api/config', { method: 'POST', body: JSON.stringify({ key, value }) });
+    $('cfgKey').value = ''; $('cfgVal').value = '';
+    loadConfigTable();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function explainPair() {
+  const pair = $('scanPair').value.trim().toLowerCase();
+  if (!pair) return;
+  const out = $('scanResult');
+  out.innerHTML = '<div class="verdict">Menganalisis…</div>';
+  try {
+    const r = await api('/api/intelligence/analyze/' + encodeURIComponent(pair) + '/explain');
+    // Endpoint explain bisa mengembalikan teks penjelasan atau objek; keduanya
+    // ditangani agar panel tidak kosong hanya karena bentuknya berbeda.
+    const text = typeof r === 'string' ? r : (r.explanation ?? r.text ?? JSON.stringify(r, null, 2));
+    out.innerHTML = `<div class="card"><pre style="margin:0;white-space:pre-wrap;font:12px/1.6 ui-monospace,Consolas,monospace">${escapeHtml(text)}</pre></div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="verdict bad">Gagal: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// Tab terakhir dipulihkan agar muat-ulang halaman tidak selalu kembali ke Monitor.
+try {
+  const saved = localStorage.getItem(TAB_STORE);
+  if (saved && TABS.includes(saved)) showTab(saved);
+} catch {}
+
+refresh();
+setInterval(refresh, 30000);
+window.addEventListener('resize', () => {
+  if (activeTab === 'monitor') api('/api/equity-curve?days=30').then(renderChart).catch(() => {});
+});
+</script>
+</body>
+</html>

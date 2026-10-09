@@ -1,0 +1,27 @@
+# Rahasia — JANGAN pernah di-commit
+.env
+.env.local
+.env.*.local
+
+# Dependensi & hasil build
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Database (berisi riwayat trading)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Log
+*.log
+logs/
+npm-debug.log*
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
