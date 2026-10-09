@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Trade } from '../database/entities/trade.entity';
 import { NotificationModule } from './notification.module';
+import { BotConfigModule } from '../config/bot-config.module';
 import { TradingModule } from '../trading/trading.module';
 import { AnalysisModule } from '../analysis/analysis.module';
 import { StrategyModule } from '../strategy/strategy.module';
@@ -27,6 +28,7 @@ import { AnalystModule } from '../analyst/analyst.module';
     NewsModule,
     GlobalMarketModule,
     AnalystModule,
+    BotConfigModule,
     NotificationModule,
     TradingModule,
     AnalysisModule,

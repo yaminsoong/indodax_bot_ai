@@ -114,16 +114,25 @@ export class SignalScannerService {
   /**
    * Temukan pair layak pindai dari seluruh pasar IDR.
    *
-   * Memakai SATU panggilan ringkasan pasar untuk menyaring volume, lalu
-   * memeriksa status maintenance dari metadata pair yang sudah di-cache.
-   * Spread tidak diperiksa di sini: itu butuh satu panggilan ticker per pair,
-   * dan pada ratusan pair biayanya justru menyamai analisis yang hendak
-   * dihemat — spread disaring belakangan oleh Market Intelligence pada
-   * kandidat yang jauh lebih sedikit.
+   * Memakai SATU panggilan ringkasan pasar untuk menyaring volume DAN spread,
+   * lalu memeriksa status maintenance dari metadata pair yang sudah di-cache.
+   *
+   * Spread kini disaring di sini. Sebelumnya tidak, dengan alasan bahwa itu
+   * menuntut satu panggilan ticker per pair — alasan yang ternyata salah:
+   * `/api/summaries` sudah mengembalikan bid dan ask untuk SELURUH pair dalam
+   * respons yang sama, dan nilainya hanya dibuang.
+   *
+   * Akibat dari kelalaian itu nyata dan terukur: dari 13 memecoin di Indodax,
+   * sembilan punya spread 0,7%-11,1% sementara volumenya cukup untuk lolos.
+   * MEME dengan spread 11,1% memerlukan 2,1 jam gerakan normal hanya untuk
+   * menutup biaya masuk-keluar. Pair seperti itu lolos ke analisis penuh, dan
+   * saat backtest ia tidak pernah ditolak sama sekali karena backtest tidak
+   * punya data order book.
    */
   async prefilter(filter: ScannerFilter = {}): Promise<PrefilterResult> {
     const minVolume = filter.minVolumeIdr ?? this.config.params().scannerMinVolumeIdr;
     const maxPairs = filter.maxPairs ?? this.config.params().scannerMaxPairs;
+    const maxSpread = filter.maxSpreadPercent ?? this.config.params().scannerMaxSpreadPercent;
 
     const market = await this.indodax.getMarketSummary();
     const rejected = { volume: 0, spread: 0, untradable: 0, stablecoin: 0 };
@@ -140,6 +149,13 @@ export class SignalScannerService {
         }
         if (m.volumeIdr < minVolume) {
           rejected.volume++;
+          return false;
+        }
+        // Spread null berarti bid/ask tidak terbaca — diperlakukan sebagai
+        // TIDAK LAYAK, bukan sebagai spread nol. Pair yang order book-nya
+        // tidak bisa dibaca justru yang paling meragukan.
+        if (m.spreadPercent === null || m.spreadPercent > maxSpread) {
+          rejected.spread++;
           return false;
         }
         const tradable = this.pairs.isTradable(m.pair);
@@ -176,8 +192,17 @@ export class SignalScannerService {
       prefilterResult = await this.prefilter(filter);
       pairs = prefilterResult.candidates;
       this.logger.log(
+        // Setiap sebab penolakan disebut. Sebelumnya spread dan stablecoin
+        // tidak muncul di log, sehingga 24 pair yang tersaring karena spread
+        // lebar hilang tanpa jejak — operator tidak bisa membedakan penyaring
+        // yang bekerja dari penyaring yang tidak pernah berjalan.
         `Penyaringan likuiditas: ${pairs.length} kandidat dari ${prefilterResult.totalPairs} pair IDR ` +
-          `(${prefilterResult.rejected.volume} volume kurang, ${prefilterResult.rejected.untradable} tidak dapat ditradingkan)`,
+          `(${prefilterResult.rejected.volume} volume kurang, ` +
+          `${prefilterResult.rejected.spread} spread > ${
+            filter.maxSpreadPercent ?? this.config.params().scannerMaxSpreadPercent
+          }%, ` +
+          `${prefilterResult.rejected.stablecoin} stablecoin, ` +
+          `${prefilterResult.rejected.untradable} tidak dapat ditradingkan)`,
       );
     }
 

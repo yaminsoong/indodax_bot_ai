@@ -8,6 +8,7 @@ import { TradeConfirmService } from './trade-confirm.service';
 import { SignalScannerService } from '../market-intelligence/scanner/signal-scanner.service';
 import { RiskService } from '../trading/risk.service';
 import { BotConfigService } from '../config/bot-config.service';
+import { TradingUniverseService } from '../config/trading-universe.service';
 import { IndodaxService } from '../indodax/indodax.service';
 import { fmtPrice, idr } from '../common/num';
 
@@ -41,6 +42,7 @@ export class OpportunityWatcherService {
     private readonly scanner: SignalScannerService,
     private readonly risk: RiskService,
     private readonly config: BotConfigService,
+    private readonly universe: TradingUniverseService,
     private readonly indodax: IndodaxService,
   ) {}
 
@@ -83,7 +85,21 @@ export class OpportunityWatcherService {
       };
     }
 
-    const result = await this.scanner.scan({ direction: 'LONG' });
+    /**
+     * Pemindaian dibatasi pada TRADING_PAIRS bila daftarnya DISETEL EKSPLISIT.
+     *
+     * Sebelumnya pengawas selalu memindai seluruh pasar. Akibatnya nyata: pada
+     * 2026-10-09 ia menawarkan MUBARAKIDR padahal operator sudah menyetel
+     * `TRADING_PAIRS=fartcoinidr,dogeidr` berdasarkan hasil backtest. MUBARAK
+     * memang likuid, tetapi tidak pernah diuji sama sekali — dan ordernya
+     * gagal karena presisi kuantitas yang hanya diketahui setelah dicoba.
+     *
+     * Menyetel daftar pair secara eksplisit adalah keputusan sadar untuk
+     * membatasi diri pada yang sudah diperiksa. Pengawas harus menghormatinya.
+     * Dengan `TRADING_PAIRS=auto`, pemindaian tetap mencakup seluruh pasar.
+     */
+    const explicitPairs = this.universe.isAuto ? undefined : this.config.params().tradingPairs;
+    const result = await this.scanner.scan({ direction: 'LONG', pairs: explicitPairs });
 
     const open = await this.trades.find({
       where: { status: In(['OPEN', 'CLOSING']) },

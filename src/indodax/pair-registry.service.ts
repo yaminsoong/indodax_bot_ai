@@ -16,6 +16,19 @@ export interface PairInfo {
   minOrderIdr: number;
   /** Minimum kuantitas koin untuk order jual. */
   minOrderCoin: number;
+  /**
+   * Maksimum desimal KUANTITAS yang diterima API untuk pair ini
+   * (`volume_precision`). Banyak pair memakai 8, tetapi sebagian menuntut 0 —
+   * yaitu kuantitas bilangan bulat.
+   */
+  quantityDecimals: number;
+  /**
+   * Kuantitas wajib kelipatan ini (`quantity_increment`).
+   *
+   * Dipisah dari `quantityDecimals` karena keduanya tidak selalu sejalan:
+   * sebuah pair bisa menuntut kelipatan 1 sekaligus presisi 0.
+   */
+  quantityStep: number;
   takerFeePercent: number;
   makerFeePercent: number;
   isMaintenance: boolean;
@@ -66,6 +79,10 @@ export class PairRegistryService implements OnModuleInit {
           : decimalsOf(priceStep),
         minOrderIdr: Number(p.trade_min_base_currency) || 10000,
         minOrderCoin: Number(p.trade_min_traded_currency) || 0,
+        quantityDecimals: Number.isFinite(Number(p.volume_precision))
+          ? Number(p.volume_precision)
+          : COIN_DECIMALS,
+        quantityStep: Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 0,
         takerFeePercent: Number(p.trade_fee_percent_taker ?? p.trade_fee_percent ?? 0.2),
         makerFeePercent: Number(p.trade_fee_percent_maker ?? p.trade_fee_percent ?? 0.2),
         isMaintenance: Number(p.is_maintenance) === 1,
@@ -129,13 +146,55 @@ export class PairRegistryService implements OnModuleInit {
     return toPlainString(roundToStep(price, info.priceStep), info.priceDecimals);
   }
 
-  /** Kuantitas koin dipotong ke bawah agar tidak pernah melebihi saldo. */
-  normalizeCoinAmount(_pair: string, amount: number): number {
-    return floorToStep(amount, 10 ** -COIN_DECIMALS);
+  /**
+   * Kuantitas koin dipotong ke bawah sesuai presisi pair.
+   *
+   * Versi sebelumnya MENGABAIKAN pair dan selalu memakai 8 desimal. Itu
+   * berhasil untuk BTC dan sebagian besar pair, tetapi menggagalkan order
+   * sungguhan pada pair yang menuntut kuantitas bilangan bulat:
+   *
+   *   MUBARAKIDR, volume_precision 0, quantity_increment 1
+   *   bot mengirim 8.05233101
+   *   Indodax menolak: "quantity amount has more precision than allowed (0)"
+   *
+   * Selalu DIPOTONG KE BAWAH, tidak dibulatkan: membulatkan ke atas bisa
+   * melebihi saldo yang tersedia saat menjual, atau melebihi anggaran kas
+   * saat membeli.
+   */
+  normalizeCoinAmount(pair: string, amount: number): number {
+    if (!(amount > 0)) return 0;
+
+    let info: PairInfo | null;
+    try {
+      info = this.require(pair);
+    } catch {
+      // Metadata belum termuat — pakai presisi paling longgar yang umum.
+      return floorToStep(amount, 10 ** -COIN_DECIMALS);
+    }
+
+    const decimals = Number.isFinite(info.quantityDecimals)
+      ? Math.max(0, Math.min(COIN_DECIMALS, info.quantityDecimals))
+      : COIN_DECIMALS;
+
+    // Dua batasan berlaku bersamaan; yang lebih kasar menentukan.
+    const stepFromDecimals = 10 ** -decimals;
+    const step = info.quantityStep > 0 ? Math.max(info.quantityStep, stepFromDecimals) : stepFromDecimals;
+
+    return floorToStep(amount, step);
+  }
+
+  /** Desimal kuantitas untuk pair ini, untuk pemformatan. */
+  quantityDecimals(pair: string): number {
+    try {
+      const d = this.require(pair).quantityDecimals;
+      return Number.isFinite(d) ? Math.max(0, Math.min(COIN_DECIMALS, d)) : COIN_DECIMALS;
+    } catch {
+      return COIN_DECIMALS;
+    }
   }
 
   formatCoinAmount(pair: string, amount: number): string {
-    return toPlainString(this.normalizeCoinAmount(pair, amount), COIN_DECIMALS);
+    return toPlainString(this.normalizeCoinAmount(pair, amount), this.quantityDecimals(pair));
   }
 
   /** Fee taker dalam pecahan (0.002 = 0.2%) — untuk order yang menyeberangi spread. */

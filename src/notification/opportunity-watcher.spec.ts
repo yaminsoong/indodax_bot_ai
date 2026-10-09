@@ -71,6 +71,8 @@ describe('OpportunityWatcherService', () => {
       scanner as any,
       risk as any,
       { params: () => params, get mode() { return 'SIMULATION'; } } as any,
+      // Universe AUTO dalam pengujian: pemindaian tidak dibatasi daftar pair.
+      { get isAuto() { return true; } } as any,
       indodax as any,
     );
     jest.spyOn(svc['logger'], 'log').mockImplementation(() => undefined);
@@ -224,5 +226,56 @@ describe('OpportunityWatcherService', () => {
   it('tawaran menyebut mode agar tidak tertukar simulasi dengan uang sungguhan', async () => {
     await svc.findAndOffer();
     expect(confirm.offer.mock.calls[0][1]).toMatch(/SIMULATION/);
+  });
+});
+
+/**
+ * Pembatasan pemindaian pada daftar pair yang disetel eksplisit.
+ *
+ * Pada 2026-10-09 pengawas menawarkan MUBARAKIDR padahal operator sudah
+ * menyetel `TRADING_PAIRS=fartcoinidr,dogeidr` berdasarkan hasil backtest.
+ * Pair itu memang likuid, tetapi tidak pernah diuji — dan ordernya gagal
+ * karena presisi kuantitas yang baru diketahui setelah dicoba.
+ */
+describe('OpportunityWatcherService: menghormati TRADING_PAIRS', () => {
+  const build = (isAuto: boolean, tradingPairs: string[]) => {
+    const scanner = { scan: jest.fn().mockResolvedValue({ hits: [], overview: [] }) };
+    const svc = Object.create(OpportunityWatcherService.prototype) as OpportunityWatcherService;
+    Object.assign(svc, {
+      trades: { find: jest.fn().mockResolvedValue([]) },
+      notification: { isEnabled: () => true },
+      tradeConfirm: { offer: jest.fn() },
+      scanner,
+      risk: { checkKillSwitch: jest.fn().mockResolvedValue({ halted: false, reasons: [] }) },
+      config: {
+        params: () => ({
+          tradingPairs,
+          opportunityMinScore: 70,
+          opportunityCooldownHours: 4,
+          opportunityMaxPerScan: 2,
+        }),
+        mode: 'SIMULATION',
+      },
+      universe: { get isAuto() { return isAuto; } },
+      indodax: {},
+      lastOffered: new Map(),
+      logger: { log: jest.fn(), warn: jest.fn(), debug: jest.fn() },
+    });
+    return { svc, scanner };
+  };
+
+  it('daftar eksplisit membatasi pemindaian pada pair itu saja', async () => {
+    const { svc, scanner } = build(false, ['fartcoinidr', 'dogeidr']);
+    await svc.findAndOffer();
+    expect(scanner.scan).toHaveBeenCalledWith({
+      direction: 'LONG',
+      pairs: ['fartcoinidr', 'dogeidr'],
+    });
+  });
+
+  it('TRADING_PAIRS=auto tetap memindai seluruh pasar', async () => {
+    const { svc, scanner } = build(true, ['btcidr']);
+    await svc.findAndOffer();
+    expect(scanner.scan).toHaveBeenCalledWith({ direction: 'LONG', pairs: undefined });
   });
 });
