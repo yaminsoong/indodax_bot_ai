@@ -79,10 +79,22 @@ export class PairRegistryService implements OnModuleInit {
           : decimalsOf(priceStep),
         minOrderIdr: Number(p.trade_min_base_currency) || 10000,
         minOrderCoin: Number(p.trade_min_traded_currency) || 0,
-        quantityDecimals: Number.isFinite(Number(p.volume_precision))
-          ? Number(p.volume_precision)
-          : COIN_DECIMALS,
-        quantityStep: Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 0,
+        // `quantity_increment` adalah SATU-SATUNYA sumber yang bisa dipercaya.
+        //
+        // `volume_precision` tampak seperti jumlah desimal, tetapi diukur
+        // langsung pada 476 pair Indodax nilainya **0 untuk semuanya** —
+        // termasuk BTC yang jelas menerima 8 desimal. Memakainya sebagai
+        // presisi membulatkan setiap kuantitas menjadi bilangan bulat dan
+        // merusak seluruh pair kecuali yang memang berkelipatan 1.
+        //
+        // Sebaran `quantity_increment` yang sebenarnya:
+        //   1e-8      404 pair  (BTC, ETH, DOGE, FARTCOIN)
+        //   1          67 pair  (PEPE, MUBARAK)
+        //   0.000001    5 pair
+        quantityStep: Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 10 ** -COIN_DECIMALS,
+        quantityDecimals: decimalsOf(
+          Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 10 ** -COIN_DECIMALS,
+        ),
         takerFeePercent: Number(p.trade_fee_percent_taker ?? p.trade_fee_percent ?? 0.2),
         makerFeePercent: Number(p.trade_fee_percent_maker ?? p.trade_fee_percent ?? 0.2),
         isMaintenance: Number(p.is_maintenance) === 1,
@@ -172,14 +184,7 @@ export class PairRegistryService implements OnModuleInit {
       return floorToStep(amount, 10 ** -COIN_DECIMALS);
     }
 
-    const decimals = Number.isFinite(info.quantityDecimals)
-      ? Math.max(0, Math.min(COIN_DECIMALS, info.quantityDecimals))
-      : COIN_DECIMALS;
-
-    // Dua batasan berlaku bersamaan; yang lebih kasar menentukan.
-    const stepFromDecimals = 10 ** -decimals;
-    const step = info.quantityStep > 0 ? Math.max(info.quantityStep, stepFromDecimals) : stepFromDecimals;
-
+    const step = info.quantityStep > 0 ? info.quantityStep : 10 ** -COIN_DECIMALS;
     return floorToStep(amount, step);
   }
 

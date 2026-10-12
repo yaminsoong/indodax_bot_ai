@@ -40,8 +40,10 @@ describe('Presisi kuantitas per pair', () => {
       price_round: 0,
       trade_min_base_currency: 10000,
       trade_min_traded_currency: 0.00001,
-      volume_precision: 8,
-      quantity_increment: 0,
+      // volume_precision bernilai 0 untuk SELURUH 476 pair Indodax, termasuk
+      // BTC yang jelas menerima 8 desimal. Field itu tidak bisa dipakai.
+      volume_precision: 0,
+      quantity_increment: 1e-8,
       trade_fee_percent_taker: 0.2,
       trade_fee_percent_maker: 0.1,
     },
@@ -61,8 +63,11 @@ describe('Presisi kuantitas per pair', () => {
         priceDecimals: Number(p.price_round),
         minOrderIdr: Number(p.trade_min_base_currency),
         minOrderCoin: Number(p.trade_min_traded_currency),
-        quantityDecimals: Number(p.volume_precision),
-        quantityStep: Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 0,
+        quantityStep: Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 1e-8,
+        quantityDecimals: Math.max(
+          0,
+          Math.round(-Math.log10(Number(p.quantity_increment) > 0 ? Number(p.quantity_increment) : 1e-8)),
+        ),
         takerFeePercent: Number(p.trade_fee_percent_taker),
         makerFeePercent: Number(p.trade_fee_percent_maker),
         isMaintenance: false,
@@ -108,7 +113,7 @@ describe('Presisi kuantitas per pair', () => {
     (svc as any).pairs.set('xidr', {
       ...(svc as any).pairs.get('btcidr'),
       id: 'xidr',
-      quantityDecimals: 2,
+      quantityDecimals: 0,
       quantityStep: 5,
     });
     expect(svc.normalizeCoinAmount('xidr', 13.7)).toBe(10);
@@ -133,14 +138,23 @@ describe('Presisi kuantitas per pair', () => {
     expect(svc.normalizeCoinAmount('belumadaidr', 1.123456789)).toBeCloseTo(1.12345678, 10);
   });
 
-  it('volume_precision yang hilang tidak membuat kuantitas jadi nol', () => {
+  it('quantity_increment yang hilang memakai 8 desimal, bukan nol', () => {
     (svc as any).pairs.set('yidr', {
       ...(svc as any).pairs.get('btcidr'),
       id: 'yidr',
-      quantityDecimals: NaN,
+      quantityDecimals: 8,
       quantityStep: 0,
     });
     expect(svc.normalizeCoinAmount('yidr', 1.5)).toBeCloseTo(1.5, 10);
+  });
+
+  it('volume_precision DIABAIKAN — nilainya 0 untuk semua pair', () => {
+    // Kalau field itu dipakai sebagai presisi, BTC akan dibulatkan menjadi
+    // bilangan bulat dan seluruh order BTC rusak. Diukur langsung: 476 dari
+    // 476 pair Indodax melaporkan volume_precision 0.
+    expect(META.btcidr.volume_precision).toBe(0);
+    expect(svc.quantityDecimals('btcidr')).toBe(8);
+    expect(svc.formatCoinAmount('btcidr', 8.05233101)).toBe('8.05233101');
   });
 
   // ─── Konsekuensi nilai order ─────────────────────────────────────────────
