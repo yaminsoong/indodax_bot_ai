@@ -1,3 +1,4 @@
+import { toTelegramMarkdown } from '../common/telegram-markdown';
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
@@ -252,7 +253,21 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         { timeout: 10000 },
       );
     } catch (err) {
-      this.logger.warn(`answerCallbackQuery gagal: ${err.message}`);
+      // Pesan asli Telegram ada di response.data.description; `err.message`
+      // hanya berbunyi "Request failed with status code 400" dan tidak
+      // memberi tahu apa pun tentang sebabnya.
+      const description = err?.response?.data?.description ?? err.message;
+
+      // Callback yang kedaluwarsa BUKAN kerusakan: Telegram hanya menerima
+      // jawaban dalam sekitar satu menit, dan operasi order yang memakan
+      // puluhan detik membuat antrean callback melewati batas itu. Dicatat
+      // sebagai debug agar tidak terbaca sebagai gangguan.
+      const expired = /too old|query id is invalid|response timeout/i.test(String(description));
+      if (expired) {
+        this.logger.debug(`answerCallbackQuery dilewati (kedaluwarsa): ${description}`);
+      } else {
+        this.logger.warn(`answerCallbackQuery gagal: ${description}`);
+      }
     }
   }
 
@@ -644,7 +659,20 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     try {
       const fields: Record<string, string> = { chat_id: chatId ?? this.chatId };
       if (caption) {
-        fields.caption = caption.length > 1024 ? caption.slice(0, 1021) + '…' : caption;
+        /**
+         * Caption dibersihkan sama seperti pesan teks.
+         *
+         * Tanpa ini Telegram menolak seluruh kirimannya:
+         *   "can't parse entities: Can't find end of the entity
+         *    starting at byte offset 72"
+         *
+         * Gejalanya menipu — yang gagal adalah GAMBARNYA, padahal sebabnya
+         * penanda Markdown yang tidak berpasangan di keterangannya. Pemotongan
+         * pada 1024 karakter juga bisa memutus penanda di tengah, jadi
+         * pembersihan dilakukan SETELAH dipotong.
+         */
+        const trimmed = caption.length > 1024 ? caption.slice(0, 1021) + '…' : caption;
+        fields.caption = toTelegramMarkdown(trimmed);
         fields.parse_mode = 'Markdown';
       }
 

@@ -79,8 +79,27 @@ export class PortfolioService {
    */
   async getCashIdr(): Promise<number> {
     if (this.config.isLive) {
-      const balance = await this.indodax.getBalance();
-      return balance.idr;
+      /**
+       * Dana yang DITAHAN order terbuka ikut dihitung sebagai kas.
+       *
+       * Indodax memindahkan IDR dari `balance` ke `balance_hold` begitu order
+       * limit dipasang. Uang itu belum dibelanjakan — ia masih milik akun dan
+       * akan kembali bila ordernya dibatalkan. Mengabaikannya membuat ekuitas
+       * jatuh seketika setiap kali order dipasang.
+       *
+       * Akibatnya terukur pada 2026-10-12, mode LIVE:
+       *   saldo         Rp16.998
+       *   order + fee   Rp11.071  (ditahan)
+       *   kas terbaca   Rp5.927
+       *   drawdown      1 - 5.927/16.998 = 65,13%
+       *   log bot       "Drawdown 65.14% >= batas 15%"
+       *
+       * Kill switch lalu menghentikan seluruh entry — padahal bot belum
+       * membukukan satu trade pun dan tidak kehilangan uang sama sekali.
+       * Memasang order seharusnya tidak pernah terlihat seperti kerugian.
+       */
+      const { available, hold } = await this.indodax.getBalanceWithHold();
+      return (available.idr ?? 0) + (hold.idr ?? 0);
     }
 
     if (this.simulatedCash === null) {
