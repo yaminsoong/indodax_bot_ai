@@ -17,6 +17,8 @@ import { NewsService } from '../news/news.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiService } from '../ai/ai.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
+import { AffordabilityService } from '../trading/affordability.service';
+import { OpportunityWatcherService } from '../notification/opportunity-watcher.service';
 import { AuditService } from '../database/audit.service';
 import { AuditCategory } from '../database/entities/audit-log.entity';
 import { ApiKeyGuard } from './api-key.guard';
@@ -46,6 +48,8 @@ export class DashboardController {
     private readonly globalMarket: GlobalMarketService,
     private readonly ai: AiService,
     private readonly analyst: AiAnalystService,
+    private readonly affordability: AffordabilityService,
+    private readonly opportunities: OpportunityWatcherService,
     private readonly audit: AuditService,
   ) {}
 
@@ -195,6 +199,37 @@ export class DashboardController {
     const q = (body?.question ?? '').trim();
     if (!q) throw new BadRequestException('Isi "question" dengan pertanyaannya');
     return this.analyst.ask(q);
+  }
+
+  @Get('affordability')
+  @ApiOperation({
+    summary: 'Pair mana yang benar-benar bisa dibeli dengan saldo sekarang',
+  })
+  async getAffordability() {
+    const [state, scan] = await Promise.all([
+      this.portfolio.getState(),
+      this.opportunities.scanForDashboard(),
+    ]);
+
+    const checks = this.affordability.checkMany(
+      scan.candidates.map((c) => ({ pair: c.pair, atrPercent: c.atrPercent })),
+      state.equityIdr,
+    );
+
+    return {
+      equityIdr: state.equityIdr,
+      cashIdr: state.cashIdr,
+      openPositions: state.openPositions,
+      minOrderIdr: 10000,
+      scanned: scan.scanned,
+      // Skor ikut disertakan agar kelayakan modal dan kualitas sinyal bisa
+      // dibaca bersamaan — keduanya harus lolos sebelum ada order.
+      checks: checks.map((c) => ({
+        ...c,
+        score: scan.candidates.find((x) => x.pair === c.pair)?.score ?? null,
+        decision: scan.candidates.find((x) => x.pair === c.pair)?.decision ?? null,
+      })),
+    };
   }
 
   @Get('ai/status')

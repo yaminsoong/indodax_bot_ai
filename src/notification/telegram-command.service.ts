@@ -17,6 +17,7 @@ import { NewsService } from '../news/news.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
 import { OpportunityWatcherService } from './opportunity-watcher.service';
+import { AffordabilityService } from '../trading/affordability.service';
 import { RecoveryService } from '../trading/recovery.service';
 import { fmtPrice, idr } from '../common/num';
 
@@ -59,6 +60,7 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     private readonly globalMarket: GlobalMarketService,
     private readonly analyst: AiAnalystService,
     private readonly opportunities: OpportunityWatcherService,
+    private readonly affordability: AffordabilityService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -93,6 +95,7 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     reg('menu', 'Daftar menu utama', () => this.menu());
     reg('ask', 'Tanya bebas ke analis: /ask kenapa BTC turun?', (a) => this.askAnalyst(a));
     reg('peluang', 'Cari peluang sekarang dan kirim tawaran bertombol', () => this.findOpportunities());
+    reg('dashboard', 'Apa yang bisa dibeli dengan saldo sekarang + kartu bertombol', () => this.dashboard());
 
     this.logger.log('Perintah Telegram terdaftar');
   }
@@ -823,6 +826,118 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Dashboard modal kecil: apa yang bisa dibeli SEKARANG dengan saldo nyata.
+   *
+   * Menjawab pertanyaan yang sebelumnya hanya bisa dijawab dengan mencoba, dan
+   * membedakan dua keadaan yang tindakannya berlawanan:
+   *
+   *   - tidak ada peluang            -> tunggu
+   *   - ada peluang tapi tak terbeli -> tambah modal
+   *
+   * Sebelum ini keduanya terlihat sama: bot diam. Setiap pair yang MAMPU dibeli
+   * dikirim sebagai kartu tersendiri beserta grafik dan tombol, memakai jalur
+   * konfirmasi dua langkah yang sama dengan /buy — jadi angka yang ditampilkan
+   * adalah angka yang benar-benar akan dipakai.
+   */
+  private async dashboard(): Promise<string> {
+    const state = await this.portfolio.getState();
+    const params = this.config.params();
+
+    const result = await this.opportunities.scanForDashboard();
+    const checks = this.affordability.checkMany(
+      result.candidates.map((c) => ({ pair: c.pair, atrPercent: c.atrPercent })),
+      state.equityIdr,
+    );
+
+    const mampu = checks.filter((c) => c.status === 'MAMPU');
+    const tidak = checks.filter((c) => c.status !== 'MAMPU');
+
+    const lines = [
+      '📊 *DASHBOARD MODAL*',
+      '',
+      '```',
+      `  Ekuitas    ${idr(state.equityIdr)}`,
+      `  Kas bebas  ${idr(state.cashIdr)}`,
+      `  Posisi     ${state.openPositions}`,
+      `  Risiko     ${params.riskPerTradePercent}% = ${idr(state.equityIdr * (params.riskPerTradePercent / 100))}/trade`,
+      `  Batas pos  ${params.maxPositionPercent}% = ${idr(state.equityIdr * (params.maxPositionPercent / 100))}`,
+      '```',
+      `Minimum order Indodax: *${idr(10000)}* (berlaku untuk seluruh 464 pair IDR)`,
+      '',
+    ];
+
+    if (mampu.length) {
+      lines.push(`✅ *${mampu.length} pair bisa dibeli sekarang*`, '');
+      for (const c of mampu) {
+        const hit = result.candidates.find((x) => x.pair === c.pair);
+        lines.push(
+          `*${c.pair.toUpperCase()}* — skor ${hit?.score ?? '?'}/100`,
+          '```',
+          `  beli    ${idr(c.cappedIdr)}  (${c.equitySharePercent.toFixed(0)}% ekuitas)`,
+          `  stop    ${c.stopPercent.toFixed(2)}% di bawah entry`,
+          `  risiko  ${idr(c.riskIdr)}`,
+          '```',
+        );
+      }
+      lines.push('_Kartu dengan grafik dan tombol dikirim menyusul._', '');
+    } else {
+      lines.push('⚪ *Tidak ada pair yang bisa dibeli sekarang.*', '');
+    }
+
+    if (tidak.length) {
+      lines.push(`*Belum terjangkau (${tidak.length}):*`);
+      for (const c of tidak.slice(0, 6)) {
+        lines.push(
+          `• ${c.pair.toUpperCase()} — butuh ekuitas ${idr(c.minEquityNeededIdr)}`,
+          `    _stop ${c.stopPercent.toFixed(2)}% membuat posisi hanya ${idr(c.cappedIdr)}_`,
+        );
+      }
+      lines.push('');
+      const termurah = Math.min(...tidak.map((c) => c.minEquityNeededIdr));
+      if (Number.isFinite(termurah)) {
+        lines.push(`_Pair termurah butuh ${idr(termurah)} — selisih ${idr(Math.max(0, termurah - state.equityIdr))}._`);
+      }
+    }
+
+    if (!result.candidates.length) {
+      lines.push(
+        '',
+        '_Scanner tidak menemukan kandidat. Itu bukan kerusakan —_',
+        '_pakai /blockers untuk melihat filter mana yang menahan._',
+      );
+    }
+
+    // Kartu bertombol dikirim terpisah agar tiap pair punya grafiknya sendiri.
+    for (const c of mampu.slice(0, params.opportunityMaxPerScan)) {
+      await this.sendDashboardCard(c.pair, result.candidates.find((x) => x.pair === c.pair)?.score ?? 0);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Satu kartu: grafik, rencana lengkap, lalu tombol.
+   *
+   * Grafik dikirim lebih dulu dan kegagalannya TIDAK membatalkan kartunya —
+   * keputusan beli tidak boleh hilang hanya karena penggambarnya bermasalah.
+   */
+  private async sendDashboardCard(pair: string, score: number): Promise<void> {
+    try {
+      const image = await this.charts.build(pair).catch(() => null);
+      if (image) {
+        const ticker = await this.indodax.getTicker(pair).catch(() => null);
+        await this.notification.sendChart(
+          image,
+          `*${pair.toUpperCase()}*${ticker ? ` — Rp ${fmtPrice(ticker.last)}` : ''} · skor ${score}/100`,
+        );
+      }
+      await this.opportunities.offerNow(pair, score);
+    } catch (err) {
+      this.logger.warn(`Kartu dashboard ${pair} gagal: ${(err as Error).message}`);
+    }
   }
 
   /** Simbol koin dari pair yang ditradingkan: "btcidr" menjadi "btc". */

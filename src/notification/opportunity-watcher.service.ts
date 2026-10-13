@@ -173,6 +173,71 @@ export class OpportunityWatcherService {
   }
 
   /**
+   * Kandidat untuk dashboard, TANPA mengirim tawaran apa pun.
+   *
+   * Dipisah dari `findAndOffer` dengan sengaja: dashboard dipanggil manual oleh
+   * operator dan harus menampilkan keadaan apa adanya, termasuk pair yang
+   * sedang dalam masa tenang atau yang tidak terjangkau. Memakai jalur
+   * penawaran akan menyembunyikan justru yang ingin dilihat.
+   */
+  async scanForDashboard(): Promise<{
+    candidates: Array<{ pair: string; score: number; decision: string; atrPercent: number | null }>;
+    scanned: number;
+  }> {
+    const explicitPairs = this.universe.isAuto ? undefined : this.config.params().tradingPairs;
+    const result = await this.scanner.scan({ direction: 'LONG', pairs: explicitPairs });
+
+    const atrByPair = new Map<string, number | null>(
+      (result.overview ?? []).map((o) => [o.pair.toLowerCase(), o.atrPercent ?? null]),
+    );
+
+    // Satu baris per pair: hit yang sama bisa muncul beberapa kali untuk
+    // timeframe berbeda, dan dashboard hanya perlu yang skornya tertinggi.
+    const best = new Map<string, { pair: string; score: number; decision: string }>();
+    for (const h of result.hits ?? []) {
+      const key = h.pair.toLowerCase();
+      const prev = best.get(key);
+      if (!prev || h.score > prev.score) {
+        best.set(key, { pair: key, score: h.score, decision: h.decision });
+      }
+    }
+
+    // Pair tanpa hit tetap disertakan dari overview: operator perlu melihat
+    // bahwa pair-nya DIPINDAI tetapi tidak lolos, bukan hilang begitu saja.
+    for (const o of result.overview ?? []) {
+      const key = o.pair.toLowerCase();
+      if (!best.has(key)) {
+        best.set(key, { pair: key, score: o.score, decision: o.decision });
+      }
+    }
+
+    const candidates = [...best.values()]
+      .map((b) => ({ ...b, atrPercent: atrByPair.get(b.pair) ?? null }))
+      .sort((a, b) => b.score - a.score);
+
+    return { candidates, scanned: result.pairsScanned ?? candidates.length };
+  }
+
+  /**
+   * Kirim tawaran untuk satu pair sekarang, melewati masa tenang.
+   *
+   * Dipakai dashboard: operator yang meminta dashboard secara eksplisit sedang
+   * meminta kartunya, jadi masa tenang yang berguna untuk cron justru
+   * menghalangi di sini. Masa tenangnya tetap DICATAT agar cron tidak
+   * mengulanginya beberapa menit kemudian.
+   */
+  async offerNow(pair: string, score: number): Promise<boolean> {
+    const plan = await this.buildPlan(pair, score);
+    if (plan.ok !== true) {
+      this.logger.debug(`Tawaran ${pair} dilewati: ${plan.reason}`);
+      return false;
+    }
+    await this.tradeConfirm.offer(pair, plan.message);
+    this.lastOffered.set(pair, Date.now());
+    return true;
+  }
+
+  /**
    * Susun tawaran lengkap, atau null bila Risk Engine menolaknya.
    *
    * Angka di sini datang dari Risk Engine yang sama dengan jalur otomatis, jadi

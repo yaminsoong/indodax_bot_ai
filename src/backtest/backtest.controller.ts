@@ -4,6 +4,7 @@ import { BacktestService } from './backtest.service';
 import { OptimizerService, SweepSpec } from './optimizer.service';
 import { BotConfigService, BotParams } from '../config/bot-config.service';
 import { BacktestConfig } from './backtest.types';
+import { IndodaxService } from '../indodax/indodax.service';
 import { ApiKeyGuard } from '../common/security/api-key.guard';
 
 interface RunBacktestDto {
@@ -40,7 +41,28 @@ export class BacktestController {
     private readonly backtest: BacktestService,
     private readonly optimizer: OptimizerService,
     private readonly config: BotConfigService,
+    private readonly indodax: IndodaxService,
   ) {}
+
+  /**
+   * Spread rata-rata pair yang diuji, dari cache ringkasan pasar.
+   *
+   * Satu nilai untuk seluruh backtest karena simulator hanya menerima satu
+   * angka. Bila beberapa pair diuji bersamaan, rata-ratanya dipakai — dan
+   * itulah alasan menguji pair satu per satu memberi gambaran lebih jujur.
+   *
+   * Mengembalikan 0 bila cache belum terisi; itu jujur karena nilainya memang
+   * belum diketahui, dan laporan backtest sudah memuat peringatan tentangnya.
+   */
+  private defaultSpreadPercent(dto: RunBacktestDto): number {
+    const pairs = dto.pairs?.length ? dto.pairs : this.config.params().tradingPairs;
+    const spreads = pairs
+      .map((p) => this.indodax.getCachedSpreadPercent(p.toLowerCase()))
+      .filter((v): v is number => v !== null && v >= 0);
+
+    if (!spreads.length) return 0;
+    return spreads.reduce((a, b) => a + b, 0) / spreads.length;
+  }
 
   private buildConfig(dto: RunBacktestDto): BacktestConfig {
     const params = this.config.params();
@@ -51,7 +73,20 @@ export class BacktestController {
       initialCapital: dto.initialCapital ?? this.config.simulationCapitalIdr,
       strategy: dto.strategy ?? this.config.str('ACTIVE_STRATEGY', 'EMA_SCALPING_V2'),
       slippagePercent: dto.slippagePercent ?? 0.05,
-      spreadPercent: dto.spreadPercent,
+      /**
+       * Spread bawaan diambil dari spread NYATA pair, bukan nol.
+       *
+       * Sebelumnya field ini `undefined` bila pemanggil tidak menyebutkannya,
+       * dan simulator menjatuhkannya ke `?? 0`. Artinya SETIAP backtest yang
+       * tidak menyebut spread secara eksplisit mengasumsikan spread nol —
+       * tanpa satu pun peringatan.
+       *
+       * Dampaknya terukur pada memecoin: SHIB (spread 0,821%) berubah dari
+       * +0,414R menjadi +0,204R begitu spread nyatanya dimasukkan, dan
+       * kerugiannya naik dua kali. Pada pair ber-spread lebar, backtest
+       * tanpa spread melaporkan hasil yang tidak mungkin dicapai.
+       */
+      spreadPercent: dto.spreadPercent ?? this.defaultSpreadPercent(dto),
       useIntelligence: dto.useIntelligence,
       feePercentOverride: dto.feePercentOverride,
       // Default mengikuti konfigurasi bot agar backtest mencerminkan cara
