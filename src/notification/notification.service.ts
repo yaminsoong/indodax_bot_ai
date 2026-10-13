@@ -82,6 +82,86 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   // ─── Pengiriman ───────────────────────────────────────────────────────────
 
+  /**
+   * Kirim pesan dan kembalikan `message_id` agar bisa diperbarui nanti.
+   *
+   * Dipakai pelaporan progres order: satu pesan yang berubah mengikuti keadaan
+   * jauh lebih mudah diikuti daripada lima pesan terpisah yang membanjiri
+   * percakapan. Peredam duplikat SENGAJA dilewati di sini — progres memang
+   * mengirim teks yang mirip berulang kali.
+   */
+  async sendTrackable(text: string, chatId?: string): Promise<number | null> {
+    if (!this.enabled) {
+      this.logger.debug(`[Telegram nonaktif] ${text.split('\n')[0]}`);
+      return null;
+    }
+
+    const send = (body: Record<string, unknown>) =>
+      axios.post(`https://api.telegram.org/bot${this.botToken}/sendMessage`, body, {
+        timeout: 15000,
+      });
+
+    try {
+      const res = await send({
+        chat_id: chatId ?? this.chatId,
+        text: toTelegramMarkdown(text),
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      });
+      return Number(res.data?.result?.message_id) || null;
+    } catch (err) {
+      const description = err?.response?.data?.description ?? err.message;
+      if (/can't parse entities|parse/i.test(String(description))) {
+        try {
+          const res = await send({
+            chat_id: chatId ?? this.chatId,
+            text,
+            disable_web_page_preview: true,
+          });
+          return Number(res.data?.result?.message_id) || null;
+        } catch {
+          /* jatuh ke log */
+        }
+      }
+      this.logger.warn(`Gagal mengirim pesan terlacak: ${description}`);
+      return null;
+    }
+  }
+
+  /**
+   * Perbarui pesan yang sudah terkirim.
+   *
+   * Telegram menolak pembaruan yang isinya SAMA dengan sebelumnya, dengan
+   * galat "message is not modified". Itu bukan kerusakan — hanya berarti
+   * keadaannya belum berubah — jadi dicatat sebagai debug.
+   */
+  async updateMessage(messageId: number, text: string, chatId?: string): Promise<boolean> {
+    if (!this.enabled || !messageId) return false;
+
+    try {
+      await axios.post(
+        `https://api.telegram.org/bot${this.botToken}/editMessageText`,
+        {
+          chat_id: chatId ?? this.chatId,
+          message_id: messageId,
+          text: toTelegramMarkdown(text),
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+        },
+        { timeout: 15000 },
+      );
+      return true;
+    } catch (err) {
+      const description = err?.response?.data?.description ?? err.message;
+      if (/not modified/i.test(String(description))) {
+        this.logger.debug('Pembaruan pesan dilewati: isinya belum berubah');
+        return false;
+      }
+      this.logger.warn(`Gagal memperbarui pesan: ${description}`);
+      return false;
+    }
+  }
+
   private async sendMessage(text: string, chatId?: string): Promise<void> {
     if (!this.enabled) {
       this.logger.debug(`[Telegram nonaktif] ${text.split('\n')[0]}`);

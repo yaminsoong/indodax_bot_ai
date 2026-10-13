@@ -413,6 +413,19 @@ export class TradingService {
 
   // ─── Buka posisi ──────────────────────────────────────────────────────────
 
+  /**
+   * Sebab kegagalan entry terakhir per pair.
+   *
+   * `openPosition` mengembalikan boolean, dan dua keadaan yang sangat berbeda
+   * sama-sama menghasilkan `false`: order maker yang tidak tersentuh harga
+   * (normal, tanpa biaya) dan penolakan exchange yang sungguhan. Jalur manual
+   * karena itu melaporkan keduanya sebagai "Order tidak tereksekusi — periksa
+   * log", yang terbaca seperti kerusakan padahal biasanya bukan.
+   *
+   * Operator yang menekan CONFIRM berhak tahu mana yang terjadi.
+   */
+  private readonly lastEntryFailure = new Map<string, { missed: boolean; reason: string }>();
+
   private async openPosition(
     pair: string,
     price: number,
@@ -526,6 +539,10 @@ export class TradingService {
       // Order maker yang tidak tersentuh harga bukan kegagalan — peluang lewat,
       // tidak ada biaya, dan tidak perlu mengganggu operator dengan alarm.
       if (outcome.missed) {
+        this.lastEntryFailure.set(pair.toLowerCase(), {
+          missed: true,
+          reason: outcome.error ?? 'limit maker tidak tersentuh harga',
+        });
         this.logger.log(`Entry maker ${pair.toUpperCase()} tidak terisi - peluang dilewat`);
         await this.audit.log({
           category: 'ORDER',
@@ -536,6 +553,10 @@ export class TradingService {
         return false;
       }
 
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason: outcome.error ?? 'tidak terisi',
+      });
       this.logger.error(`BUY ${pair} tidak tereksekusi: ${outcome.error}`);
       await this.notification.sendAlert(
         `Order BUY ${pair.toUpperCase()} gagal: ${outcome.error ?? 'tidak terisi'}`,
@@ -1158,7 +1179,19 @@ export class TradingService {
   async openManualPosition(
     pair: string,
     reason = 'MANUAL',
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{
+    success: boolean;
+    message: string;
+    /**
+     * True bila limit maker hanya tidak tersentuh harga.
+     *
+     * Dibedakan dari kegagalan karena konsekuensinya berbeda: tidak ada uang
+     * terpakai, ordernya sudah dibatalkan, dan tidak ada yang perlu diperiksa.
+     * Menampilkannya dengan tanda gagal membuat operator mencari kerusakan
+     * yang tidak ada.
+     */
+    missed?: boolean;
+  }> {
     const params = this.config.params();
     const strategy = this.strategies.active();
 
@@ -1207,10 +1240,42 @@ export class TradingService {
       reasons: [`Dibuka manual (${reason})`, ...signal.reasons.slice(0, 3)],
     };
 
+    this.lastEntryFailure.delete(pair.toLowerCase());
     const opened = await this.openPosition(pair, price, manualSignal, strategy.name);
-    return opened
-      ? { success: true, message: `Posisi ${pair.toUpperCase()} dibuka @ ${fmtPrice(price)}` }
-      : { success: false, message: 'Order tidak tereksekusi — periksa log' };
+
+    if (opened) {
+      return { success: true, message: `Posisi ${pair.toUpperCase()} dibuka @ ${fmtPrice(price)}` };
+    }
+
+    const failure = this.lastEntryFailure.get(pair.toLowerCase());
+
+    // Order maker yang tidak terisi BUKAN kegagalan: tidak ada uang terpakai,
+    // ordernya sudah dibatalkan, dan peluangnya hanya lewat. Melaporkannya
+    // dengan tanda ❌ dan "periksa log" membuat operator mencari kerusakan
+    // yang tidak ada.
+    if (failure?.missed) {
+      const timeout = this.config.params().makerFillTimeoutSeconds;
+      return {
+        success: false,
+        missed: true,
+        message: [
+          `${pair.toUpperCase()} — limit maker tidak terisi dalam ${timeout} detik.`,
+          '',
+          'Tidak ada uang terpakai; ordernya sudah dibatalkan otomatis.',
+          'Harga tidak turun ke level limit, jadi peluangnya lewat.',
+          '',
+          '_Setel MAKER_ENTRY=false bila ingin langsung dieksekusi di harga_',
+          '_pasar dengan fee taker 0,2% (dua kali fee maker)._',
+        ].join('\n'),
+      };
+    }
+
+    return {
+      success: false,
+      message: failure?.reason
+        ? `${pair.toUpperCase()} ditolak: ${failure.reason}`
+        : 'Order tidak tereksekusi — periksa log',
+    };
   }
 
   /** Tutup manual dari dashboard atau perintah Telegram. */

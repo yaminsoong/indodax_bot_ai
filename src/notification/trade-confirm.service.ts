@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { NotificationService } from './notification.service';
 import { ChartBuilderService } from './chart-builder.service';
+import { OrderProgressService, OrderProgressState } from './order-progress.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { TradingService } from '../trading/trading.service';
 import { RiskService } from '../trading/risk.service';
@@ -43,6 +44,7 @@ export class TradeConfirmService implements OnApplicationBootstrap {
   constructor(
     private readonly notification: NotificationService,
     private readonly charts: ChartBuilderService,
+    private readonly progress: OrderProgressService,
     private readonly analysis: AnalysisService,
     private readonly trading: TradingService,
     private readonly risk: RiskService,
@@ -196,10 +198,66 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       return `❌ Dibatalkan — kondisi berubah sejak usulan dibuat:\n\n${recheck.reason}`;
     }
 
-    const result = await this.trading.openManualPosition(pair, 'TELEGRAM_CONFIRM');
-    return result.success
-      ? `✅ ${result.message}`
-      : `❌ Order ${pair.toUpperCase()} gagal: ${result.message}`;
+    /**
+     * Laporan hidup dibuka SEBELUM order dikirim.
+     *
+     * Order taker diberi waktu 90 detik dan maker sampai 5 menit. Tanpa
+     * laporan ini, selama itu operator hanya melihat diam — dan tidak bisa
+     * membedakan "sedang menunggu" dari "macet".
+     *
+     * Angka yang ditampilkan datang dari usulan yang sudah divalidasi ulang
+     * tepat di atas, jadi ia memang angka yang dipakai order ini.
+     */
+    const base: OrderProgressState = {
+      pair,
+      phase: 'MENGIRIM_ORDER',
+      referencePrice: order.price,
+      positionSizeIdr: order.positionSize,
+      riskIdr: order.riskIdr,
+      stopLossPrice: order.stopLoss,
+    };
+
+    const messageId = await this.progress.start(base);
+
+    // Pemanggilan ini memblokir sampai order selesai atau timeout, jadi
+    // pembaruan "menunggu" dijadwalkan terpisah agar laporannya tetap hidup.
+    const timeoutSeconds = this.config.params().makerEntry
+      ? this.config.params().makerFillTimeoutSeconds
+      : this.config.params().orderFillTimeoutSeconds;
+
+    const startedAt = Date.now();
+    const ticker = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      const left = Math.max(0, timeoutSeconds - elapsed);
+      void this.progress.update(messageId, {
+        ...base,
+        phase: 'MENUNGGU_TERISI',
+        secondsLeft: left,
+      });
+    }, 15_000);
+
+    try {
+      const result = await this.trading.openManualPosition(pair, 'TELEGRAM_CONFIRM');
+
+      if (result.success) {
+        await this.progress.update(messageId, { ...base, phase: 'TERISI' });
+        return `✅ ${result.message}`;
+      }
+
+      if (result.missed) {
+        await this.progress.update(messageId, { ...base, phase: 'TIDAK_TERISI' });
+        return '';
+      }
+
+      await this.progress.update(messageId, {
+        ...base,
+        phase: 'DITOLAK',
+        detail: result.message,
+      });
+      return '';
+    } finally {
+      clearInterval(ticker);
+    }
   }
 
   private async onCancel(pair: string): Promise<string> {
