@@ -12,6 +12,7 @@ import { IndodaxModule } from '../indodax/indodax.module';
 import { TelegramCommandService } from './telegram-command.service';
 import { TradeConfirmService } from './trade-confirm.service';
 import { OpportunityWatcherService } from './opportunity-watcher.service';
+import { TelegramMenuService } from './telegram-menu.service';
 import { NewsModule } from '../news/news.module';
 import { GlobalMarketModule } from '../global-market/global-market.module';
 import { AnalystModule } from '../analyst/analyst.module';
@@ -38,7 +39,7 @@ import { AnalystModule } from '../analyst/analyst.module';
     // Perintah /chart memeriksa pair dan timeframe lewat IndodaxService.
     IndodaxModule,
   ],
-  providers: [TelegramCommandService, TradeConfirmService, OpportunityWatcherService],
-  exports: [TradeConfirmService, OpportunityWatcherService],
+  providers: [TelegramCommandService, TradeConfirmService, OpportunityWatcherService, TelegramMenuService],
+  exports: [TradeConfirmService, OpportunityWatcherService, TelegramMenuService],
 })
 export class TelegramCommandModule {}

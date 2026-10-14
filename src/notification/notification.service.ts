@@ -352,6 +352,50 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Kirim pesan dengan tombol inline. */
+  /**
+   * Perbarui pesan BESERTA tombolnya.
+   *
+   * Inilah yang membuat menu terasa seperti antarmuka, bukan percakapan:
+   * menekan tombol mengganti isi pesan yang sama alih-alih menambah pesan
+   * baru. Tanpa ini, menjelajah enam menu meninggalkan enam pesan dan riwayat
+   * yang berguna tergeser ke atas.
+   */
+  async updateWithButtons(
+    messageId: number,
+    text: string,
+    buttons: Array<Array<{ label: string; data: string }>>,
+    chatId?: string,
+  ): Promise<boolean> {
+    if (!this.enabled || !messageId) return false;
+
+    const keyboard = {
+      inline_keyboard: buttons.map((row) =>
+        row.map((b) => ({ text: b.label, callback_data: b.data })),
+      ),
+    };
+
+    try {
+      await axios.post(
+        `https://api.telegram.org/bot${this.botToken}/editMessageText`,
+        {
+          chat_id: chatId ?? this.chatId,
+          message_id: messageId,
+          text: toTelegramMarkdown(text),
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+          reply_markup: keyboard,
+        },
+        { timeout: 15000 },
+      );
+      return true;
+    } catch (err) {
+      const description = err?.response?.data?.description ?? err.message;
+      if (/not modified/i.test(String(description))) return false;
+      this.logger.warn(`Gagal memperbarui menu: ${description}`);
+      return false;
+    }
+  }
+
   async sendWithButtons(
     text: string,
     buttons: Array<Array<{ label: string; data: string }>>,

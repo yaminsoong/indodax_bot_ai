@@ -215,6 +215,7 @@ export class DashboardController {
       scan.candidates.map((c) => ({ pair: c.pair, atrPercent: c.atrPercent })),
       state.equityIdr,
     );
+    const minScore = this.config.params().opportunityMinScore;
 
     return {
       equityIdr: state.equityIdr,
@@ -222,13 +223,38 @@ export class DashboardController {
       openPositions: state.openPositions,
       minOrderIdr: 10000,
       scanned: scan.scanned,
-      // Skor ikut disertakan agar kelayakan modal dan kualitas sinyal bisa
-      // dibaca bersamaan — keduanya harus lolos sebelum ada order.
-      checks: checks.map((c) => ({
-        ...c,
-        score: scan.candidates.find((x) => x.pair === c.pair)?.score ?? null,
-        decision: scan.candidates.find((x) => x.pair === c.pair)?.decision ?? null,
-      })),
+      /**
+       * Kelayakan MODAL dan kualitas SINYAL dilaporkan terpisah.
+       *
+       * Keduanya harus lolos sebelum ada order, dan tindakan bila gagal
+       * berbeda: modal kurang berarti tambah modal, sinyal kurang berarti
+       * tunggu. Menggabungkannya menjadi satu status membuat operator tidak
+       * tahu harus melakukan apa.
+       *
+       * `readyToBuy` memakai ambang yang SAMA dengan /peluang dan /dashboard,
+       * supaya ketiganya tidak pernah berbeda kesimpulan tentang pair yang
+       * sama.
+       */
+      checks: checks.map((c) => {
+        const hit = scan.candidates.find((x) => x.pair === c.pair);
+        const score = hit?.score ?? null;
+        const decision = hit?.decision ?? null;
+        const isSetup = decision === 'TRADE_SETUP' || decision === 'HIGH_QUALITY_SETUP';
+        const scoreOk = (score ?? 0) >= minScore;
+
+        return {
+          ...c,
+          score,
+          decision,
+          signalOk: isSetup && scoreOk,
+          signalReason: !isSetup
+            ? `keputusan ${decision ?? 'tidak diketahui'}`
+            : !scoreOk
+              ? `skor ${score} di bawah ambang ${minScore}`
+              : null,
+          readyToBuy: c.status === 'MAMPU' && isSetup && scoreOk,
+        };
+      }),
     };
   }
 
