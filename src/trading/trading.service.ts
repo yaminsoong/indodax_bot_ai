@@ -1179,6 +1179,16 @@ export class TradingService {
   async openManualPosition(
     pair: string,
     reason = 'MANUAL',
+    /**
+     * Harga acuan dari pemanggil, bila ada.
+     *
+     * Tanpa ini jalur manual memakai `candles[last].close` — penutupan bar
+     * TERTUTUP terakhir, yang pada timeframe 60 menit bisa berumur hampir
+     * satu jam. Operator menekan CONFIRM setelah melihat harga HIDUP, jadi
+     * memesan berdasarkan harga sejam lalu membuat ukuran posisi, stop, dan
+     * target meleset dari yang ditampilkan.
+     */
+    executionPrice?: number,
   ): Promise<{
     success: boolean;
     message: string;
@@ -1224,7 +1234,10 @@ export class TradingService {
       hasOpenPosition: false,
     });
 
-    const price = candles[candles.length - 1].close;
+    const price =
+      executionPrice && executionPrice > 0
+        ? executionPrice
+        : candles[candles.length - 1].close;
 
     /**
      * Zona entry sengaja DILEPAS pada jalur manual: operator menekan tombol

@@ -365,8 +365,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     text: string,
     buttons: Array<Array<{ label: string; data: string }>>,
     chatId?: string,
-  ): Promise<boolean> {
-    if (!this.enabled || !messageId) return false;
+  ): Promise<'ok' | 'unchanged' | 'failed'> {
+    if (!this.enabled || !messageId) return 'failed';
 
     const keyboard = {
       inline_keyboard: buttons.map((row) =>
@@ -387,12 +387,22 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         },
         { timeout: 15000 },
       );
-      return true;
+      return 'ok';
     } catch (err) {
       const description = err?.response?.data?.description ?? err.message;
-      if (/not modified/i.test(String(description))) return false;
+
+      /**
+       * "not modified" DIBEDAKAN dari kegagalan.
+       *
+       * Telegram menolak pembaruan yang isinya sama persis — itu terjadi tiap
+       * kali operator menekan panel yang sedang terbuka, dan bukan kerusakan.
+       * Menyamakannya dengan kegagalan membuat pemanggil mengirim pesan
+       * duplikat setiap kali tombol yang sama ditekan dua kali.
+       */
+      if (/not modified/i.test(String(description))) return 'unchanged';
+
       this.logger.warn(`Gagal memperbarui menu: ${description}`);
-      return false;
+      return 'failed';
     }
   }
 

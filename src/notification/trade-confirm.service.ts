@@ -11,6 +11,16 @@ import { IndodaxService } from '../indodax/indodax.service';
 import { fmtPrice, idr } from '../common/num';
 
 interface PendingOrder {
+  /**
+   * Identitas usulan ini.
+   *
+   * Usulan disimpan ber-key pair, jadi menekan BUY dua kali untuk pair yang
+   * sama menimpa yang pertama — sementara KARTU lamanya masih tertera di layar
+   * dengan angka lama. Menekan CONFIRM di kartu itu akan mengeksekusi rencana
+   * yang berbeda dari yang ditampilkan. Id ini dibawa di dalam tombol sehingga
+   * kartu basi dapat dikenali dan ditolak.
+   */
+  id: string;
   pair: string;
   price: number;
   stopLoss: number;
@@ -24,6 +34,15 @@ interface PendingOrder {
 
 /** Usulan kedaluwarsa setelah ini; harga pasar sudah bergerak terlalu jauh. */
 const PENDING_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Pergeseran harga maksimum antara usulan dan konfirmasi.
+ *
+ * Dipasang di bawah jarak stop tersempit yang lazim (sekitar 0,8%) supaya
+ * pergeseran tidak pernah memakan porsi berarti dari ruang risiko sebelum
+ * posisi bahkan dibuka.
+ */
+const MAX_PRICE_DRIFT_PERCENT = 0.5;
 
 /**
  * Tombol Telegram dan konfirmasi dua langkah sebelum order dikirim.
@@ -138,7 +157,10 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     const plan = this.risk.takeProfitPlan(price, riskPerUnit);
     const riskReward = plan.length ? plan[plan.length - 1].atR : 0;
 
+    const proposalId = Math.random().toString(36).slice(2, 8);
+
     this.pending.set(pair, {
+      id: proposalId,
       pair,
       price,
       stopLoss: decision.stopLossPrice,
@@ -170,18 +192,39 @@ export class TradeConfirmService implements OnApplicationBootstrap {
 
     await this.notification.sendWithButtons(text, [
       [
-        { label: '✅ CONFIRM', data: `confirm:${pair}` },
-        { label: '❌ CANCEL', data: `cancel:${pair}` },
+        { label: '✅ CONFIRM', data: `confirm:${pair}:${proposalId}` },
+        { label: '❌ CANCEL', data: `cancel:${pair}:${proposalId}` },
       ],
     ]);
     return '';
   }
 
   /** Langkah kedua: eksekusi, setelah memvalidasi ulang. */
-  private async onConfirm(pair: string): Promise<string> {
+  private async onConfirm(arg: string): Promise<string> {
+    // Argumennya berbentuk "pair" (kartu lama) atau "pair:id" (kartu berid).
+    const [pair, proposalId] = arg.split(':');
+
     const order = this.pending.get(pair);
     if (!order) {
       return `Tidak ada usulan aktif untuk ${pair.toUpperCase()}. Tekan BUY lagi.`;
+    }
+
+    /**
+     * Kartu yang sudah digantikan usulan lebih baru ditolak.
+     *
+     * Tanpa pemeriksaan ini, menekan CONFIRM pada kartu lama mengeksekusi
+     * rencana TERBARU sambil menampilkan angka LAMA — operator menyetujui
+     * sesuatu yang berbeda dari yang terjadi.
+     */
+    if (proposalId && order.id && proposalId !== order.id) {
+      return [
+        `⚠️ *${pair.toUpperCase()} — kartu ini sudah digantikan*`,
+        '',
+        'Ada usulan yang lebih baru untuk pair ini, jadi angka di kartu',
+        'ini bukan lagi rencana yang berlaku.',
+        '',
+        '_Pakai kartu terbaru, atau tekan BUY lagi._',
+      ].join('\n');
     }
 
     this.pending.delete(pair);
@@ -193,7 +236,50 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     // Risiko diperiksa ULANG tepat sebelum eksekusi: antara penawaran dan
     // konfirmasi, posisi lain bisa terbuka, kill switch bisa aktif, atau
     // saldo bisa berubah.
-    const recheck = await this.risk.evaluateEntry(pair, order.price, order.stopLoss, order.takeProfit);
+    /**
+     * Harga diambil ULANG, dan seluruh pemeriksaan memakai harga itu.
+     *
+     * Sebelumnya `evaluateEntry` dipanggil dengan `order.price` — harga saat
+     * tombol BUY ditekan, yang bisa berumur lima menit. Lebih jauh lagi,
+     * eksekusinya memakai penutupan bar tertutup terakhir, yang pada timeframe
+     * 60 menit bisa berumur hampir satu jam.
+     *
+     * Jadi ada TIGA harga berbeda dalam satu alur: yang dilihat operator, yang
+     * divalidasi, dan yang dipesan. Untuk uang sungguhan ketiganya harus satu.
+     */
+    const ticker = await this.indodax.getTicker(pair).catch(() => null);
+    if (!ticker?.last) {
+      return `Dibatalkan - harga ${pair.toUpperCase()} tidak terbaca saat konfirmasi.`;
+    }
+
+    const livePrice = ticker.last;
+    const driftPercent = ((livePrice - order.price) / order.price) * 100;
+
+    // Pergeseran melebihi toleransi membatalkan usulan: stop, target, ukuran,
+    // dan risiko rupiah seluruhnya diturunkan dari harga saat usulan dibuat.
+    // Mengeksekusinya berarti memesan sesuatu yang tidak pernah disetujui.
+    if (Math.abs(driftPercent) > MAX_PRICE_DRIFT_PERCENT) {
+      return [
+        `⚠️ *${pair.toUpperCase()} — harga sudah bergerak*`,
+        '',
+        '```',
+        `  saat usulan  Rp ${fmtPrice(order.price)}`,
+        `  sekarang     Rp ${fmtPrice(livePrice)}`,
+        `  selisih      ${driftPercent >= 0 ? '+' : ''}${driftPercent.toFixed(2)}%  (batas ${MAX_PRICE_DRIFT_PERCENT}%)`,
+        '```',
+        'Order dibatalkan. Stop loss, target, dan ukuran posisi dihitung',
+        'dari harga lama, jadi tidak lagi menggambarkan trade ini.',
+        '',
+        '_Tekan BUY lagi untuk perhitungan baru._',
+      ].join('\n');
+    }
+
+    // Stop digeser mengikuti harga baru agar JARAK risikonya tetap sama dengan
+    // yang disetujui operator, bukan jaraknya yang ikut berubah.
+    const stopDistance = order.price - order.stopLoss;
+    const liveStop = livePrice - stopDistance;
+
+    const recheck = await this.risk.evaluateEntry(pair, livePrice, liveStop, 0);
     if (!recheck.allowed) {
       return `❌ Dibatalkan — kondisi berubah sejak usulan dibuat:\n\n${recheck.reason}`;
     }
@@ -211,10 +297,11 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     const base: OrderProgressState = {
       pair,
       phase: 'MENGIRIM_ORDER',
-      referencePrice: order.price,
-      positionSizeIdr: order.positionSize,
-      riskIdr: order.riskIdr,
-      stopLossPrice: order.stopLoss,
+      // Angka dari recheck, bukan usulan lama - inilah yang dipesan.
+      referencePrice: livePrice,
+      positionSizeIdr: recheck.positionSize,
+      riskIdr: recheck.riskAmountIdr,
+      stopLossPrice: recheck.stopLossPrice,
     };
 
     const messageId = await this.progress.start(base);
@@ -226,18 +313,24 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       : this.config.params().orderFillTimeoutSeconds;
 
     const startedAt = Date.now();
-    const ticker = setInterval(() => {
+    const progressTicker = setInterval(() => {
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       const left = Math.max(0, timeoutSeconds - elapsed);
-      void this.progress.update(messageId, {
-        ...base,
-        phase: 'MENUNGGU_TERISI',
-        secondsLeft: left,
-      });
+      // Kegagalan memperbarui laporan TIDAK boleh menggagalkan ordernya, dan
+      // tidak boleh menjadi rejection tak tertangani yang mematikan proses.
+      void this.progress
+        .update(messageId, {
+          ...base,
+          phase: 'MENUNGGU_TERISI',
+          secondsLeft: left,
+        })
+        .catch((err) =>
+          this.logger.debug(`Pembaruan progres dilewati: ${(err as Error).message}`),
+        );
     }, 15_000);
 
     try {
-      const result = await this.trading.openManualPosition(pair, 'TELEGRAM_CONFIRM');
+      const result = await this.trading.openManualPosition(pair, 'TELEGRAM_CONFIRM', livePrice);
 
       if (result.success) {
         await this.progress.update(messageId, { ...base, phase: 'TERISI' });
@@ -256,11 +349,12 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       });
       return '';
     } finally {
-      clearInterval(ticker);
+      clearInterval(progressTicker);
     }
   }
 
-  private async onCancel(pair: string): Promise<string> {
+  private async onCancel(arg: string): Promise<string> {
+    const [pair] = arg.split(':');
     this.pending.delete(pair);
     return `Dilewati: ${pair.toUpperCase()}`;
   }

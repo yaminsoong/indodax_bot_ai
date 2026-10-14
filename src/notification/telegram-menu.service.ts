@@ -72,7 +72,20 @@ export class TelegramMenuService implements OnApplicationBootstrap {
       return;
     }
 
-    await this.notification.updateWithButtons(messageId, text, buttons);
+    /**
+     * Bila pengeditan gagal, menunya dikirim sebagai pesan baru.
+     *
+     * Telegram menolak edit pada pesan yang terlalu tua atau sudah dihapus.
+     * Tanpa cadangan ini, menekan tombol pada pesan lama tidak menghasilkan
+     * apa pun — terlihat seperti bot yang macet, padahal hanya pesannya yang
+     * tidak bisa diubah lagi.
+     */
+    const result = await this.notification.updateWithButtons(messageId, text, buttons);
+
+    // 'unchanged' berarti panelnya memang sudah terbuka — tidak perlu apa-apa.
+    if (result === 'failed') {
+      await this.notification.sendWithButtons(text, buttons);
+    }
   }
 
   private async panel(name: string): Promise<{ text: string; buttons: Button[][] }> {
