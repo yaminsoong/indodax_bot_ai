@@ -33,6 +33,19 @@ export interface AiCompletionRequest {
    * Penyedia yang tidak mengenal konsep ini mengabaikannya.
    */
   disableThinking?: boolean;
+  /**
+   * Izinkan model mencari di web sendiri bila data yang diberikan tidak cukup.
+   *
+   * Model yang memutuskan kapan mencari, bukan kode kita — ia tahu lebih baik
+   * apakah pertanyaannya terjawab oleh data yang ada, dan itu menghemat kuota
+   * dibanding mencari pada setiap pertanyaan.
+   *
+   * Hasil pencarian adalah DATA DARI LUAR yang tidak terpercaya: pemanggil
+   * WAJIB menyatakannya sebagai bahan, bukan instruksi, di dalam prompt-nya.
+   * Penyedia yang tidak mendukung pencarian mengabaikan tanda ini dan TIDAK
+   * boleh mengembalikan `sources`.
+   */
+  webSearch?: boolean;
 }
 
 export interface AiCompletionResult {
@@ -42,6 +55,16 @@ export interface AiCompletionResult {
   /** Token yang dilaporkan penyedia, bila ada. Untuk memantau biaya. */
   inputTokens?: number;
   outputTokens?: number;
+  /**
+   * Sumber web yang benar-benar dipakai model, bila ia mencari.
+   *
+   * Kosong berarti model TIDAK mencari — bukan berarti pencarian gagal. Ini
+   * yang membedakan jawaban dari data bot dan jawaban yang menyentuh web,
+   * sehingga operator bisa menilai sendiri seberapa jauh ia percaya.
+   */
+  sources?: Array<{ title: string; uri: string }>;
+  /** Kueri yang dikirim model ke mesin pencari, bila ada. */
+  searchQueries?: string[];
   latencyMs: number;
 }
 
