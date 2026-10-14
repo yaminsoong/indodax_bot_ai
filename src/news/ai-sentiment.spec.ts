@@ -18,7 +18,11 @@ describe('AiSentimentService', () => {
 
   beforeEach(() => {
     ai = { isAvailable: jest.fn().mockReturnValue(true), tryComplete: jest.fn() };
-    svc = new AiSentimentService(ai as any, new SentimentService());
+    // Sakelar NEWS_AI_SENTIMENT dibuat HIDUP: suite ini justru menguji jalur
+    // AI-nya. Default-nya mati untuk menghemat kuota, dan itu diuji terpisah.
+    svc = new AiSentimentService(ai as any, new SentimentService(), {
+      get: () => 'true',
+    } as any);
   });
 
   // ─── Pembacaan keluaran yang benar ───────────────────────────────────────
@@ -193,5 +197,19 @@ describe('AiSentimentService', () => {
 
     const sent = ai.tryComplete.mock.calls[0][0].user as string;
     expect(sent).toMatch(/Nilai 30 judul/);
+  });
+  it('bawaan MATI agar tidak menghabiskan kuota', () => {
+    // Berita punya jalur kamus kata yang berfungsi tanpa kuota sama sekali;
+    // /ask tanpa AI hanya bisa menyodorkan tabel. Jadi kuota yang terbatas
+    // diprioritaskan ke /ask.
+    const mati = new AiSentimentService(ai as any, new SentimentService(), {
+      get: (_k: string, d: string) => d,
+    } as any);
+    expect(mati.isEnabled()).toBe(false);
+  });
+
+  it('AI mati membuat sakelar hidup pun tidak berlaku', () => {
+    ai.isAvailable.mockReturnValue(false);
+    expect(svc.isEnabled()).toBe(false);
   });
 });

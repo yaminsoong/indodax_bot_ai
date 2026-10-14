@@ -14,6 +14,7 @@ describe('Penilaian berita', () => {
     const aiOff = new AiSentimentService(
       { isAvailable: () => false, tryComplete: async () => null } as any,
       new SentimentService(),
+      { get: (_k: string, d: string) => d } as any,
     );
     svc = new NewsService(new RssClient(), new SentimentService(), new CoinMatcherService(), aiOff);
   });
