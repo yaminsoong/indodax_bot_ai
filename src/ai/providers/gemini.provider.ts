@@ -25,6 +25,8 @@ export class GeminiProvider implements AiProvider {
   private readonly http: AxiosInstance;
   private readonly apiKey: string;
   readonly model: string;
+  /** Gemini punya alat google_search bawaan; penyedia lain di sini tidak. */
+  readonly supportsWebSearch = true;
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('GEMINI_API_KEY', '').trim();
@@ -152,6 +154,7 @@ export class GeminiProvider implements AiProvider {
         this.name,
         status === 429 || status === 503,
         status === 401 || status === 403,
+        status === 429,
       );
     }
   }

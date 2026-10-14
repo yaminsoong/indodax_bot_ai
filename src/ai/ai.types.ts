@@ -82,6 +82,15 @@ export interface AiProvider {
   /** False bila kunci API belum diisi. */
   isConfigured(): boolean;
   complete(req: AiCompletionRequest): Promise<AiCompletionResult>;
+  /**
+   * True bila penyedia ini benar-benar bisa mencari di web.
+   *
+   * WAJIB diperiksa sebelum menyuruh model mencari. Model yang TIDAK bisa
+   * mencari tetapi diberi instruksi "Anda boleh mencari di web" akan
+   * mengarang hasil pencarian - persis hal yang paling berbahaya di bot yang
+   * memegang uang, dan lebih buruk daripada menjawab "datanya tidak ada".
+   */
+  readonly supportsWebSearch?: boolean;
 }
 
 export class AiUnavailableError extends Error {
@@ -98,6 +107,15 @@ export class AiUnavailableError extends Error {
      * menyembunyikan satu-satunya hal yang perlu diperbaiki operator.
      */
     readonly credentialRejected = false,
+    /**
+     * True bila penyedia menolak karena KUOTA habis (HTTP 429).
+     *
+     * Dipisahkan dari `rateLimited` yang lebih luas: 503 "model sedang sibuk"
+     * pulih dalam hitungan detik, sedangkan kuota tidak. Keduanya layak
+     * dicoba lagi, tetapi hanya yang ini layak memindahkan beban ke cadangan
+     * sekarang alih-alih setelah tiga kegagalan.
+     */
+    readonly quotaExhausted = false,
   ) {
     super(message);
     this.name = 'AiUnavailableError';

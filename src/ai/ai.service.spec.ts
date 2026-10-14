@@ -259,4 +259,202 @@ describe('AiService', () => {
   it('status membedakan belum disetel dari kunci ditolak', () => {
     expect(build('none').svc.status().reason).toMatch(/AI_PROVIDER belum disetel/);
   });
+  // --- Rantai cadangan ----------------------------------------------------
+  //
+  // Sifat yang menentukan apakah cadangan benar-benar berguna: keadaan
+  // istirahat, batas laju, dan penolakan kunci harus TERPISAH per penyedia.
+  // Kalau dibagi bersama, Gemini yang kehabisan kuota akan ikut mematikan
+  // Groq - dan cadangan yang mati saat dibutuhkan sama saja dengan tidak
+  // punya cadangan.
+
+  /** Bangun layanan dengan penyedia utama DAN cadangan yang bisa diatur. */
+  const buildChain = (
+    primaryOver: Partial<AiProvider> = {},
+    backupOver: Partial<AiProvider> = {},
+    fallback = 'groq',
+  ) => {
+    const primary = makeProvider({ name: 'gemini', ...primaryOver });
+    const backup = makeProvider({ name: 'groq', model: 'cadangan', ...backupOver });
+
+    const config = {
+      get: (k: string, d: string) => {
+        if (k === 'AI_PROVIDER') return 'gemini';
+        if (k === 'AI_FALLBACK_PROVIDERS') return fallback;
+        return d;
+      },
+    };
+
+    const svc = new AiService(config as any, primary as any, backup as any, makeProvider() as any);
+    jest.spyOn(svc['logger'], 'log').mockImplementation(() => undefined);
+    jest.spyOn(svc['logger'], 'warn').mockImplementation(() => undefined);
+    jest.spyOn(svc['logger'], 'error').mockImplementation(() => undefined);
+    jest.spyOn(svc['logger'], 'debug').mockImplementation(() => undefined);
+    svc.onModuleInit();
+    return { svc, primary, backup };
+  };
+
+  const kuotaHabis = () =>
+    new AiUnavailableError('Gemini gagal (HTTP 429): kuota habis', 'gemini', true, false, true);
+
+  it('tanpa AI_FALLBACK_PROVIDERS tidak ada cadangan', () => {
+    const { svc } = build('gemini');
+    expect(svc.status().chain).toHaveLength(1);
+  });
+
+  it('cadangan didaftarkan dan terlihat di status', () => {
+    const { svc } = buildChain();
+    const chain = svc.status().chain;
+
+    expect(chain).toHaveLength(2);
+    expect(chain[0].provider).toBe('gemini');
+    expect(chain[1].provider).toBe('groq');
+  });
+
+  it('yang utama dipakai selama masih bisa', async () => {
+    const { svc, primary, backup } = buildChain();
+    await svc.tryComplete(req);
+
+    expect(primary.complete).toHaveBeenCalledTimes(1);
+    expect(backup.complete).not.toHaveBeenCalled();
+  });
+
+  it('kuota utama habis -> cadangan yang menjawab', async () => {
+    const { svc, primary, backup } = buildChain({
+      complete: jest.fn().mockRejectedValue(kuotaHabis()),
+    });
+
+    const r = await svc.tryComplete(req);
+
+    expect(r).not.toBeNull();
+    expect(primary.complete).toHaveBeenCalledTimes(1);
+    expect(backup.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('kuota habis mengistirahatkan penyedia itu SEKARANG, tanpa menunggu 3 gagal', async () => {
+    // Dua percobaan berikutnya yang pasti gagal hanya menunda jawaban yang
+    // sebenarnya bisa diberikan cadangan.
+    const { svc, primary } = buildChain({
+      complete: jest.fn().mockRejectedValue(kuotaHabis()),
+    });
+
+    await svc.tryComplete(req);
+    expect(svc.status().chain[0].usable).toBe(false);
+    expect(svc.status().chain[0].reason).toMatch(/diistirahatkan/);
+
+    await svc.tryComplete(req);
+    // Masih satu kali: yang utama tidak dicoba lagi.
+    expect(primary.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('istirahat pada yang utama TIDAK mematikan cadangan', async () => {
+    // Inilah sebab keadaan dipisah per penyedia.
+    const { svc, backup } = buildChain({
+      complete: jest.fn().mockRejectedValue(kuotaHabis()),
+    });
+
+    await svc.tryComplete(req);
+    await svc.tryComplete(req);
+    await svc.tryComplete(req);
+
+    expect(svc.isAvailable()).toBe(true);
+    expect(backup.complete).toHaveBeenCalledTimes(3);
+  });
+
+  it('kunci utama ditolak tetap menyisakan cadangan', async () => {
+    const { svc, backup } = buildChain({
+      complete: jest
+        .fn()
+        .mockRejectedValue(
+          new AiUnavailableError('HTTP 401: kredensial tidak sah', 'gemini', false, true),
+        ),
+    });
+
+    const r = await svc.tryComplete(req);
+
+    expect(r).not.toBeNull();
+    expect(backup.complete).toHaveBeenCalledTimes(1);
+    expect(svc.status().chain[0].reason).toMatch(/kunci API ditolak/);
+    expect(svc.isAvailable()).toBe(true);
+  });
+
+  it('batas laju dihitung per penyedia, bukan bersama', async () => {
+    const limit = PROVIDER_RATE_LIMITS.gemini.rpm;
+    const { svc, primary, backup } = buildChain();
+
+    for (let i = 0; i < limit + 3; i++) await svc.tryComplete(req);
+
+    expect(primary.complete).toHaveBeenCalledTimes(limit);
+    // Sisanya dialihkan ke cadangan, bukan dibuang.
+    expect(backup.complete).toHaveBeenCalledTimes(3);
+  });
+
+  it('seluruh rantai mati menghasilkan null, bukan galat', async () => {
+    const gagal = () => ({ complete: jest.fn().mockRejectedValue(kuotaHabis()) });
+    const { svc } = buildChain(gagal(), gagal());
+
+    await expect(svc.tryComplete(req)).resolves.toBeNull();
+    expect(svc.isAvailable()).toBe(false);
+  });
+
+  it('alasan menyebut SETIAP penyedia ketika semua mati', async () => {
+    // "AI mati" tanpa sebab tidak memberi operator apa pun untuk diperbaiki.
+    const gagal = () => ({ complete: jest.fn().mockRejectedValue(kuotaHabis()) });
+    const { svc } = buildChain(gagal(), gagal());
+
+    await svc.tryComplete(req);
+    const reason = svc.status().reason ?? '';
+
+    expect(reason).toMatch(/gemini:/);
+    expect(reason).toMatch(/groq:/);
+  });
+
+  it('activeProvider menunjuk penyedia yang akan dipakai berikutnya', async () => {
+    const { svc } = buildChain({ complete: jest.fn().mockRejectedValue(kuotaHabis()) });
+
+    expect(svc.activeProvider()).toBe('gemini');
+    await svc.tryComplete(req);
+    expect(svc.activeProvider()).toBe('groq');
+  });
+
+  it('cadangan tanpa kunci API dilewati, bukan menggagalkan start', () => {
+    const { svc } = buildChain({}, { isConfigured: () => false });
+    expect(svc.status().chain).toHaveLength(1);
+    expect(svc.isAvailable()).toBe(true);
+  });
+
+  it('nama cadangan yang tidak dikenal dilewati', () => {
+    const { svc } = buildChain({}, {}, 'pisang');
+    expect(svc.status().chain).toHaveLength(1);
+  });
+
+  it('cadangan yang sama dengan utama tidak didaftarkan dua kali', () => {
+    const { svc } = buildChain({}, {}, 'gemini');
+    expect(svc.status().chain).toHaveLength(1);
+  });
+
+  it('token dijumlahkan lintas penyedia agar biaya lapisan terpantau', async () => {
+    const { svc } = buildChain({ complete: jest.fn().mockRejectedValue(kuotaHabis()) });
+
+    await svc.tryComplete(req);
+    const st = svc.status();
+
+    // 100/20 berasal dari penyedia cadangan yang menjawab.
+    expect(st.calls).toBe(1);
+    expect(st.inputTokens).toBe(100);
+    expect(st.outputTokens).toBe(20);
+  });
+
+  it('503 TIDAK diperlakukan sebagai kuota habis', async () => {
+    // Model sibuk pulih dalam hitungan detik; mengistirahatkannya 15 menit
+    // akan membuang penyedia utama karena gangguan sesaat.
+    const { svc } = buildChain({
+      complete: jest
+        .fn()
+        .mockRejectedValueOnce(new AiUnavailableError('HTTP 503: sibuk', 'gemini', true))
+        .mockResolvedValue({ text: 'ok', provider: 'gemini', model: 'uji', latencyMs: 5 }),
+    });
+
+    await svc.tryComplete(req);
+    expect(svc.status().chain[0].usable).toBe(true);
+  });
 });

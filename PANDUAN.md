@@ -689,6 +689,46 @@ Bila kunci ditolak (HTTP 401/403), AI langsung mati dan `reason` menyebutkannya.
 Keadaan itu **menempel** sampai proses dimulai ulang, karena kunci dibaca sekali
 saat start — mencoba lagi dengan kunci yang sama hanya membuang permintaan.
 
+### Penyedia cadangan: Gemini habis, Groq lanjut
+
+```
+AI_PROVIDER=gemini
+AI_FALLBACK_PROVIDERS=groq      # kosongkan untuk mematikan
+GROQ_MODEL=openai/gpt-oss-120b
+```
+
+Cadangan dipakai **hanya** bila yang utama kehabisan kuota, kuncinya ditolak,
+atau sedang mati. Sengaja opt-in: menambahkan setiap penyedia yang kebetulan
+punya kunci berarti mengirim data ke layanan yang tidak pernah Anda pilih.
+
+Yang membuat cadangan ini benar-benar berguna: **keadaan istirahat dan batas
+laju terpisah per penyedia.** Kalau dibagi bersama, Gemini yang kehabisan kuota
+akan ikut mematikan Groq — dan cadangan yang mati saat dibutuhkan sama saja
+dengan tidak punya cadangan.
+
+HTTP 429 (kuota habis) **langsung** mengistirahatkan penyedia itu 15 menit,
+tanpa menunggu tiga kegagalan. Dua percobaan berikutnya yang pasti gagal hanya
+menunda jawaban yang sebenarnya bisa diberikan cadangan. HTTP 503 (model
+sibuk) tidak diperlakukan begitu — ia pulih dalam hitungan detik.
+
+**Groq tidak bisa mencari di web.** Saat beban pindah ke Groq, instruksi
+pencarian otomatis dilepas. Model yang tidak punya alat pencarian tetapi
+disuruh mencari akan **mengarang sumbernya** — lebih buruk daripada menjawab
+"datanya tidak ada".
+
+`/api/ai/status` menampilkan seluruh rantai:
+
+```
+aktif: groq | total calls: 1
+  - gemini  calls=0  bisa=False  | sedang diistirahatkan 898 detik lagi
+  - groq    calls=1  bisa=True   | None
+```
+
+> **Daftar model Groq berubah tanpa pemberitahuan.** Default lama
+> `llama-3.3-70b-versatile` sudah dihapus dan membalas HTTP 404 — kegagalan
+> yang justru muncul saat cadangan dibutuhkan. Periksa dengan
+> `GET https://api.groq.com/openai/v1/models` sebelum menyalahkan kuncinya.
+
 ### Sentimen Bahasa Indonesia
 
 Kamus semula hanya Inggris. Diukur langsung: "Bitcoin Anjlok Tajam, Investor

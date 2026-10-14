@@ -191,7 +191,16 @@ export class AiAnalystService {
    */
   private webSearchEnabled(): boolean {
     const raw = (process.env.ASK_WEB_SEARCH ?? 'true').trim().toLowerCase();
-    return raw !== 'false' && raw !== '0';
+    if (raw === 'false' || raw === '0') return false;
+
+    /**
+     * Penyedia yang akan menjawab harus benar-benar bisa mencari.
+     *
+     * Saat kuota Gemini habis dan beban berpindah ke Groq, instruksi
+     * "Anda boleh mencari di web" harus ikut hilang. Model yang tidak punya
+     * alat pencarian tetapi disuruh mencari akan mengarang sumbernya.
+     */
+    return this.ai.webSearchAvailable();
   }
 
   /**

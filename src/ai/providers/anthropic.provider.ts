@@ -96,6 +96,7 @@ export class AnthropicProvider implements AiProvider {
         this.name,
         status === 429 || status === 529,
         status === 401 || status === 403,
+        status === 429,
       );
     }
   }

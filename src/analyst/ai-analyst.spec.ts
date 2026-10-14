@@ -11,7 +11,7 @@ import { CoinMatcherService } from '../news/coin-matcher.service';
  */
 describe('AiAnalystService', () => {
   let svc: AiAnalystService;
-  let ai: { isAvailable: jest.Mock; tryComplete: jest.Mock; status: jest.Mock };
+  let ai: { isAvailable: jest.Mock; tryComplete: jest.Mock; status: jest.Mock; webSearchAvailable: jest.Mock };
   let analysis: { analyzeNow: jest.Mock };
   let news: { assessCoin: jest.Mock; assessMarket: jest.Mock };
   let globalMarket: { assess: jest.Mock };
@@ -23,6 +23,7 @@ describe('AiAnalystService', () => {
     ai = {
       isAvailable: jest.fn().mockReturnValue(true),
       status: jest.fn().mockReturnValue({ reason: null }),
+      webSearchAvailable: jest.fn().mockReturnValue(true),
       tryComplete: jest.fn().mockResolvedValue({
         text: 'BTC melemah tipis karena tren pendek belum searah.',
         provider: 'gemini',
@@ -492,5 +493,26 @@ describe('AiAnalystService', () => {
 
     const r = await svc.ask('performa saya gimana');
     expect(r.dataUsed).not.toContain('riwayat trade');
+  });
+  it('aturan pencarian HILANG bila penyedia aktif tidak bisa mencari', async () => {
+    // Saat kuota Gemini habis dan beban pindah ke Groq, instruksi "Anda boleh
+    // mencari di web" harus ikut hilang. Model tanpa alat pencarian yang
+    // disuruh mencari akan mengarang sumbernya -- lebih buruk daripada
+    // menjawab "datanya tidak ada".
+    ai.webSearchAvailable.mockReturnValue(false);
+
+    await svc.ask('ada kabar apa hari ini');
+    const call = ai.tryComplete.mock.calls[0][0];
+
+    expect(call.webSearch).toBe(false);
+    expect(call.system).not.toMatch(/PENCARIAN WEB/);
+  });
+
+  it('ASK_WEB_SEARCH=true tidak memaksa pencarian pada penyedia yang tidak mampu', async () => {
+    process.env.ASK_WEB_SEARCH = 'true';
+    ai.webSearchAvailable.mockReturnValue(false);
+
+    await svc.ask('kabar apa');
+    expect(ai.tryComplete.mock.calls[0][0].webSearch).toBe(false);
   });
 });
