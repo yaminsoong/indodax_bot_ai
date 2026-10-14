@@ -11,15 +11,17 @@ import { CoinMatcherService } from '../news/coin-matcher.service';
  */
 describe('AiAnalystService', () => {
   let svc: AiAnalystService;
-  let ai: { isAvailable: jest.Mock; tryComplete: jest.Mock };
+  let ai: { isAvailable: jest.Mock; tryComplete: jest.Mock; status: jest.Mock };
   let analysis: { analyzeNow: jest.Mock };
   let news: { assessCoin: jest.Mock; assessMarket: jest.Mock };
   let globalMarket: { assess: jest.Mock };
   let portfolio: { getState: jest.Mock };
+  let trading: any;
 
   beforeEach(() => {
     ai = {
       isAvailable: jest.fn().mockReturnValue(true),
+      status: jest.fn().mockReturnValue({ reason: null }),
       tryComplete: jest.fn().mockResolvedValue({
         text: 'BTC melemah tipis karena tren pendek belum searah.',
         provider: 'gemini',
@@ -94,6 +96,29 @@ describe('AiAnalystService', () => {
       getState: jest.fn().mockResolvedValue({ equityIdr: 10_000_000, positions: [] }),
     };
 
+    trading = {
+      getBlockerStats: jest.fn().mockResolvedValue({
+        periodHours: 24,
+        totalSignals: 412,
+        buySignals: 38,
+        executedSignals: 1,
+        passedFiltersNotExecuted: 4,
+        blockers: [
+          { reason: 'ADX di bawah ambang', count: 198, percentOfSignals: 48.1 },
+          { reason: 'spread terlalu lebar', count: 77, percentOfSignals: 18.7 },
+        ],
+        byPair: {},
+        nearMisses: [
+          { pair: 'fartcoinidr', strength: 71, blockedBy: 'spread terlalu lebar', at: new Date() },
+        ],
+      }),
+      getPerformanceSummary: jest.fn().mockResolvedValue({
+        totalTrades: 3,
+        winRate: 33.3,
+        totalProfitLoss: -121,
+      }),
+    };
+
     const config = {
       params: () => ({ tradingPairs: ['btcidr', 'ethidr'] }),
       get mode() {
@@ -107,6 +132,7 @@ describe('AiAnalystService', () => {
       news as any,
       globalMarket as any,
       portfolio as any,
+      trading as any,
       config as any,
       new CoinMatcherService(),
     );
@@ -242,5 +268,71 @@ describe('AiAnalystService', () => {
     await svc.ask('kondisi pasar hari ini gimana');
     expect(news.assessMarket).toHaveBeenCalled();
     expect(news.assessCoin).not.toHaveBeenCalled();
+  });
+  // --- Konteks penahan entry dan performa --------------------------------
+  //
+  // "Kenapa bot tidak masuk posisi" adalah pertanyaan yang paling sering
+  // diajukan. Sebabnya tercatat persis di tabel sinyal, tetapi dulu tidak
+  // pernah dikirim ke model -- jawabannya hanya bisa menebak dari indikator.
+
+  it('mengirim alasan penahan entry ke model', async () => {
+    await svc.ask('kenapa bot belum masuk posisi?');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+    expect(sent).toMatch(/KENAPA BOT MENAHAN ENTRY/);
+    expect(sent).toMatch(/ADX di bawah ambang/);
+    expect(sent).toMatch(/spread terlalu lebar/);
+  });
+
+  it('mengirim sinyal yang nyaris lolos, bukan hanya hitungan filter', async () => {
+    await svc.ask('kenapa bot belum masuk posisi?');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+    expect(sent).toMatch(/FARTCOINIDR kekuatan 71/);
+  });
+
+  it('meminta alasan penahan untuk 24 jam, bukan rentang bawaan seminggu', async () => {
+    // Operator menanyakan keadaan sekarang. Rata-rata seminggu akan
+    // mengaburkan sebab yang baru muncul hari ini.
+    await svc.ask('kenapa bot belum masuk posisi?');
+    expect(trading.getBlockerStats).toHaveBeenCalledWith(24);
+  });
+
+  it('performa SELALU disertai jumlah trade', async () => {
+    // Win rate dari 3 trade bukan bukti. Tanpa jumlahnya, model akan
+    // menyimpulkan seolah itu bukti.
+    await svc.ask('performa saya gimana');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+    expect(sent).toMatch(/Jumlah trade selesai: 3/);
+    expect(sent).toMatch(/Win rate/);
+  });
+
+  it('kegagalan sumber penahan tidak menggagalkan jawaban', async () => {
+    // Promise.allSettled: satu sumber mati berarti bloknya hilang, bukan
+    // seluruh pertanyaan gagal dijawab.
+    trading.getBlockerStats.mockRejectedValue(new Error('tabel terkunci'));
+
+    const r = await svc.ask('kondisi pasar sekarang gimana');
+
+    expect(r.fallback).toBe(false);
+    expect(r.dataUsed).not.toContain('alasan penahan');
+  });
+  it('menyebut SEBAB AI tidak terpakai, bukan hanya "belum aktif"', async () => {
+    // Kunci yang ditolak dan AI_PROVIDER yang belum disetel terlihat sama dari
+    // sisi operator, padahal tindakan perbaikannya berbeda.
+    ai.isAvailable.mockReturnValue(false);
+    ai.status.mockReturnValue({ reason: 'kunci API ditolak: Gemini gagal (HTTP 401)' });
+
+    const r = await svc.ask('kondisi pasar gimana');
+
+    expect(r.fallback).toBe(true);
+    expect(r.text).toMatch(/kunci API ditolak/);
+    expect(r.text).toMatch(/HTTP 401/);
+  });
+
+  it('tanpa sebab yang diketahui tidak mengarang saran', async () => {
+    ai.isAvailable.mockReturnValue(false);
+    ai.status.mockReturnValue({ reason: null });
+
+    const r = await svc.ask('kondisi pasar gimana');
+    expect(r.text).not.toMatch(/Sebabnya/);
   });
 });

@@ -181,4 +181,82 @@ describe('AiService', () => {
     expect(svc.status().inputTokens).toBe(0);
     expect(svc.status().calls).toBe(1);
   });
+  // --- Kunci ditolak -------------------------------------------------------
+  //
+  // Penolakan kunci (HTTP 401/403) berbeda jenis dari gangguan sesaat: kunci
+  // dibaca sekali saat init, jadi mencoba lagi dengan kunci yang sama tidak
+  // akan pernah berhasil. Yang paling berbahaya bukan panggilan yang terbuang,
+  // melainkan `status()` yang melaporkan "aktif" sementara setiap panggilan
+  // ditolak -- operator tidak punya petunjuk apa pun untuk diperbaiki.
+
+  const ditolak = () =>
+    makeProvider({
+      complete: jest
+        .fn()
+        .mockRejectedValue(
+          new AiUnavailableError('Gemini gagal (HTTP 401): kredensial tidak sah', 'gemini', false, true),
+        ),
+    });
+
+  it('kunci ditolak membuat AI langsung tidak tersedia, tanpa menunggu gagal kedua', async () => {
+    const { svc } = build('gemini', ditolak());
+    expect(svc.isAvailable()).toBe(true);
+
+    await svc.tryComplete(req);
+
+    expect(svc.isAvailable()).toBe(false);
+  });
+
+  it('kunci ditolak dinyatakan di status, bukan tersembunyi sebagai "aktif"', async () => {
+    const { svc } = build('gemini', ditolak());
+    jest.spyOn(svc['logger'], 'error').mockImplementation(() => undefined);
+
+    await svc.tryComplete(req);
+
+    const st = svc.status();
+    expect(st.available).toBe(false);
+    expect(st.reason).toMatch(/kunci API ditolak/);
+    expect(st.reason).toMatch(/HTTP 401/);
+  });
+
+  it('setelah kunci ditolak, penyedia TIDAK dipanggil lagi', async () => {
+    const { svc, provider } = build('gemini', ditolak());
+    jest.spyOn(svc['logger'], 'error').mockImplementation(() => undefined);
+
+    await svc.tryComplete(req);
+    await svc.tryComplete(req);
+    await svc.tryComplete(req);
+
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('kunci ditolak tetap mengembalikan null, bukan melempar', async () => {
+    const { svc } = build('gemini', ditolak());
+    jest.spyOn(svc['logger'], 'error').mockImplementation(() => undefined);
+    await expect(svc.tryComplete(req)).resolves.toBeNull();
+  });
+
+  it('kegagalan biasa TIDAK disalahartikan sebagai kunci ditolak', async () => {
+    // Satu kegagalan sesaat tidak boleh mematikan AI untuk selamanya.
+    const { svc, provider } = build(
+      'gemini',
+      makeProvider({
+        complete: jest
+          .fn()
+          .mockRejectedValueOnce(new AiUnavailableError('Gemini gagal (HTTP 503): sibuk', 'gemini', true))
+          .mockResolvedValue({ text: '1:50', provider: 'gemini', model: 'uji', latencyMs: 5 }),
+      }),
+    );
+
+    await svc.tryComplete(req);
+
+    expect(svc.isAvailable()).toBe(true);
+    expect(svc.status().reason).toBeNull();
+    await expect(svc.tryComplete(req)).resolves.not.toBeNull();
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('status membedakan belum disetel dari kunci ditolak', () => {
+    expect(build('none').svc.status().reason).toMatch(/AI_PROVIDER belum disetel/);
+  });
 });

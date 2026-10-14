@@ -67,6 +67,14 @@ export class AiUnavailableError extends Error {
     readonly provider: AiProviderName,
     /** True bila kegagalannya karena batas laju dan layak dicoba lagi nanti. */
     readonly rateLimited = false,
+    /**
+     * True bila penyedia MENOLAK kuncinya (HTTP 401/403).
+     *
+     * Dipisahkan dari kegagalan lain karena ini tidak akan membaik dengan
+     * sendirinya: mencoba lagi hanya membuang permintaan, dan status "aktif"
+     * menyembunyikan satu-satunya hal yang perlu diperbaiki operator.
+     */
+    readonly credentialRejected = false,
   ) {
     super(message);
     this.name = 'AiUnavailableError';

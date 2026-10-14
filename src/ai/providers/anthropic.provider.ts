@@ -95,6 +95,7 @@ export class AnthropicProvider implements AiProvider {
         `Claude gagal${status ? ` (HTTP ${status})` : ''}: ${detail}`,
         this.name,
         status === 429 || status === 529,
+        status === 401 || status === 403,
       );
     }
   }

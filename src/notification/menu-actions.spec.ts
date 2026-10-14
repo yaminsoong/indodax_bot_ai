@@ -87,6 +87,7 @@ describe('Aksi menu Telegram', () => {
       risk: { checkKillSwitch: jest.fn().mockResolvedValue({ halted: false, reasons: [] }) },
       trading,
       config,
+      analyst: { isEnabled: jest.fn().mockReturnValue(true) },
       pendingClose: new Map(),
       logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
     });
@@ -276,5 +277,32 @@ describe('Aksi menu Telegram', () => {
     params.tradingEnabled = false;
     await (svc as any).render('utama', 99);
     expect(teksTerakhir()).toMatch(/sedang dijeda/i);
+  });
+  // --- Panel analis -------------------------------------------------------
+
+  it('menu utama punya pintu masuk ke analis', async () => {
+    await (svc as any).render('utama', 99);
+    const labels = tombolTerakhir().flat().map((b) => b.data);
+    expect(labels).toContain('menu:analis');
+  });
+
+  it('panel analis memberi contoh pertanyaan, bukan daftar perintah', async () => {
+    await (svc as any).render('analis', 99);
+    const t = teksTerakhir();
+    expect(t).toMatch(/\/ask kenapa bot belum masuk posisi/);
+    expect(t).toMatch(/\/ask posisi saya aman tidak/);
+  });
+
+  it('panel analis menyatakan batas kemampuannya', async () => {
+    // Operator yang berpikir analis bisa memasang order akan menunggu
+    // sesuatu yang tidak akan pernah terjadi.
+    await (svc as any).render('analis', 99);
+    expect(teksTerakhir()).toMatch(/TIDAK bisa memasang atau menutup order/);
+  });
+
+  it('keadaan AI mati dinyatakan apa adanya', async () => {
+    (svc as any).analyst.isEnabled.mockReturnValue(false);
+    await (svc as any).render('analis', 99);
+    expect(teksTerakhir()).toMatch(/AI belum aktif/);
   });
 });

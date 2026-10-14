@@ -4,6 +4,7 @@ import { PortfolioService } from '../trading/portfolio.service';
 import { RiskService } from '../trading/risk.service';
 import { TradingService } from '../trading/trading.service';
 import { BotConfigService } from '../config/bot-config.service';
+import { AiAnalystService } from '../analyst/ai-analyst.service';
 import { fmtPrice, idr } from '../common/num';
 
 type Button = { label: string; data: string };
@@ -23,6 +24,7 @@ const MAIN_GRID: Button[][] = [
     { label: '🕘 Riwayat Trade', data: 'menu:riwayat' },
     { label: '⚙️ Pengaturan', data: 'menu:pengaturan' },
   ],
+  [{ label: '🧠 Tanya Analis', data: 'menu:analis' }],
 ];
 
 const BACK: Button[] = [{ label: '← Menu', data: 'menu:utama' }];
@@ -65,6 +67,7 @@ export class TelegramMenuService implements OnApplicationBootstrap {
     private readonly risk: RiskService,
     private readonly trading: TradingService,
     private readonly config: BotConfigService,
+    private readonly analyst: AiAnalystService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -120,6 +123,8 @@ export class TelegramMenuService implements OnApplicationBootstrap {
         return this.riskPanel();
       case 'riwayat':
         return this.riwayatPanel();
+      case 'analis':
+        return this.analisPanel();
       case 'pengaturan':
         return this.pengaturanPanel();
       default:
@@ -456,6 +461,48 @@ export class TelegramMenuService implements OnApplicationBootstrap {
         '```',
         '_Metrik baru berarti setelah sekitar 100 trade._',
         '_Di bawah itu angkanya didominasi kebetulan._',
+      ].join('\n'),
+      buttons: [BACK],
+    };
+  }
+
+  /**
+   * Panel analis: contoh pertanyaan yang BISA dijawab, bukan daftar perintah.
+   *
+   * Model hanya menjawab dari data bot — harga, indikator, berita, makro,
+   * posisi, dan alasan penahan. Pertanyaan di luar itu akan dijawab "datanya
+   * tidak tersedia", dan menampilkan contoh yang tepat mencegah operator
+   * menghabiskan percakapan pada hal yang memang tidak bisa dijawab.
+   */
+  private async analisPanel(): Promise<Panel> {
+    const aktif = this.analyst.isEnabled();
+
+    return {
+      text: [
+        '🧠 *TANYA ANALIS*',
+        '',
+        aktif
+          ? '🟢 AI aktif — jawaban dalam bahasa biasa.'
+          : '⚪ AI belum aktif — jawaban berupa ringkasan data.',
+        '',
+        'Tulis pertanyaannya langsung, tanpa format khusus:',
+        '',
+        '```',
+        '  /ask kenapa bot belum masuk posisi?',
+        '  /ask posisi saya aman tidak?',
+        '  /ask kondisi pasar sekarang gimana',
+        '  /ask kenapa FARTCOIN naik hari ini?',
+        '  /ask performa saya sejauh ini gimana',
+        '```',
+        '*Yang diketahui analis:*',
+        '  • harga, EMA, RSI, ADX, ATR, order book',
+        '  • berita 48 jam + sentimennya',
+        '  • pasar global: saham, dolar, emas',
+        '  • posisi terbuka beserta P&L-nya',
+        '  • alasan tiap filter menahan entry',
+        '',
+        '_Analis TIDAK bisa memasang atau menutup order,_',
+        '_dan tidak memberi perintah beli. Ia menjelaskan._',
       ].join('\n'),
       buttons: [BACK],
     };

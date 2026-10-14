@@ -41,6 +41,16 @@ export class AiService implements OnModuleInit {
   private consecutiveFailures = 0;
   private pausedUntil = 0;
 
+  /**
+   * Alasan kunci ditolak, bila penyedia menolaknya.
+   *
+   * Kunci dibaca sekali saat init, jadi penolakan TIDAK akan sembuh sendiri —
+   * operator harus memperbaiki kuncinya lalu memulai ulang proses. Karena itu
+   * keadaan ini menempel: mencoba lagi tiap siklus hanya membuang permintaan
+   * dan menumpuk peringatan yang sama di log.
+   */
+  private credentialRejected: string | null = null;
+
   private totalCalls = 0;
   private totalInputTokens = 0;
   private totalOutputTokens = 0;
@@ -92,13 +102,21 @@ export class AiService implements OnModuleInit {
   }
 
   isAvailable(): boolean {
-    return this.provider !== null && Date.now() >= this.pausedUntil;
+    return this.provider !== null && !this.credentialRejected && Date.now() >= this.pausedUntil;
   }
 
   status(): {
     provider: AiProviderName;
     model: string | null;
     available: boolean;
+    /**
+     * Mengapa AI tidak tersedia, null bila tersedia.
+     *
+     * Tanpa ini `available: false` tidak bisa dibedakan antara "belum disetel",
+     * "sedang diistirahatkan", dan "kuncinya ditolak" — padahal hanya yang
+     * terakhir menuntut tindakan operator.
+     */
+    reason: string | null;
     pausedForSeconds: number;
     calls: number;
     inputTokens: number;
@@ -108,11 +126,23 @@ export class AiService implements OnModuleInit {
       provider: this.providerName,
       model: this.provider?.model ?? null,
       available: this.isAvailable(),
+      reason: this.unavailableReason(),
       pausedForSeconds: Math.max(0, Math.round((this.pausedUntil - Date.now()) / 1000)),
       calls: this.totalCalls,
       inputTokens: this.totalInputTokens,
       outputTokens: this.totalOutputTokens,
     };
+  }
+
+  private unavailableReason(): string | null {
+    if (!this.provider) {
+      return this.providerName === 'none'
+        ? 'AI_PROVIDER belum disetel'
+        : `penyedia ${this.providerName} tidak siap`;
+    }
+    if (this.credentialRejected) return `kunci API ditolak: ${this.credentialRejected}`;
+    if (Date.now() < this.pausedUntil) return 'sedang diistirahatkan setelah gagal berulang';
+    return null;
   }
 
   /**
@@ -124,6 +154,7 @@ export class AiService implements OnModuleInit {
    */
   async tryComplete(req: AiCompletionRequest): Promise<AiCompletionResult | null> {
     if (!this.provider) return null;
+    if (this.credentialRejected) return null;
 
     if (Date.now() < this.pausedUntil) {
       return null;
@@ -150,6 +181,24 @@ export class AiService implements OnModuleInit {
 
       const message = err instanceof AiUnavailableError ? err.message : (err as Error).message;
       const rateLimited = err instanceof AiUnavailableError && err.rateLimited;
+
+      /**
+       * Kunci ditolak: berhenti sekarang, jangan tunggu kegagalan kedua.
+       *
+       * Penolakan kunci bukan gangguan sesaat. Memperlakukannya seperti itu
+       * membuat `status()` melaporkan "aktif" sampai ambang jeda tercapai —
+       * dan setelah jeda habis, mencoba lagi dengan kunci yang sama.
+       */
+      if (err instanceof AiUnavailableError && err.credentialRejected) {
+        this.credentialRejected = message;
+        this.consecutiveFailures = 0;
+        this.logger.error(
+          `Kunci API ${this.providerName} DITOLAK: ${message} ` +
+            'AI dimatikan sampai kuncinya diperbaiki dan proses dimulai ulang. ' +
+            'Sentimen memakai kamus kata; keputusan trading tidak terpengaruh.',
+        );
+        return null;
+      }
 
       if (this.consecutiveFailures >= FAILURES_BEFORE_PAUSE) {
         this.pausedUntil = Date.now() + PAUSE_MS;

@@ -4,6 +4,7 @@ import { AnalysisService } from '../analysis/analysis.service';
 import { NewsService } from '../news/news.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { PortfolioService } from '../trading/portfolio.service';
+import { TradingService } from '../trading/trading.service';
 import { BotConfigService } from '../config/bot-config.service';
 import { CoinMatcherService } from '../news/coin-matcher.service';
 import { fmtPrice, idr } from '../common/num';
@@ -80,6 +81,7 @@ export class AiAnalystService {
     private readonly news: NewsService,
     private readonly globalMarket: GlobalMarketService,
     private readonly portfolio: PortfolioService,
+    private readonly trading: TradingService,
     private readonly config: BotConfigService,
     private readonly coins: CoinMatcherService,
   ) {}
@@ -154,12 +156,18 @@ export class AiAnalystService {
     );
 
     // Semua diambil bersamaan; satu sumber gagal tidak membatalkan sisanya.
-    const [analysisRes, globalRes, portfolioRes, newsRes] = await Promise.allSettled([
-      pair ? this.analysis.analyzeNow(pair) : Promise.resolve(null),
-      this.globalMarket.assess(),
-      this.portfolio.getState(),
-      pair ? this.news.assessCoin(pair.replace(/idr$/, '')) : this.news.assessMarket(),
-    ]);
+    const [analysisRes, globalRes, portfolioRes, newsRes, blockerRes, perfRes] =
+      await Promise.allSettled([
+        pair ? this.analysis.analyzeNow(pair) : Promise.resolve(null),
+        this.globalMarket.assess(),
+        this.portfolio.getState(),
+        pair ? this.news.assessCoin(pair.replace(/idr$/, '')) : this.news.assessMarket(),
+        // Alasan bot MENAHAN entry. Ini pertanyaan yang paling sering diajukan
+        // dan sebelumnya tidak pernah sampai ke model, sehingga jawabannya
+        // hanya bisa menebak dari indikator.
+        this.trading.getBlockerStats(24),
+        this.trading.getPerformanceSummary(),
+      ]);
 
     if (analysisRes.status === 'fulfilled' && analysisRes.value) {
       const a = analysisRes.value;
@@ -225,10 +233,85 @@ export class AiAnalystService {
         '',
         '== POSISI BOT ==',
         `Ekuitas: ${idr(p.equityIdr ?? 0)}`,
-        p.positions?.length
-          ? `Posisi terbuka: ${p.positions.map((x: any) => `${x.pair.toUpperCase()} (P&L ${idr(x.unrealizedPnl ?? 0)})`).join(', ')}`
-          : 'Posisi terbuka: tidak ada',
+        `Kas bebas: ${idr(p.cashIdr ?? 0)}`,
       );
+
+      // Rincian per posisi, bukan sekadar daftar nama. "Posisi saya aman
+      // tidak?" tidak bisa dijawab tanpa harga masuk, harga sekarang, dan
+      // jarak ke stop.
+      if (p.positions?.length) {
+        blocks.push('Posisi terbuka:');
+        for (const x of p.positions) {
+          blocks.push(
+            `- #${x.tradeId} ${x.pair.toUpperCase()}: masuk ${fmtPrice(x.entryPrice)}, ` +
+              `sekarang ${fmtPrice(x.currentPrice)}, nilai ${idr(x.valueIdr)}, ` +
+              `P&L ${idr(x.unrealizedPnl)} (${x.unrealizedPercent.toFixed(2)}%, ${x.rMultiple.toFixed(2)}R)`,
+          );
+        }
+      } else {
+        blocks.push('Posisi terbuka: tidak ada');
+      }
+    }
+
+    /**
+     * Alasan bot MENAHAN entry.
+     *
+     * "Kenapa bot tidak masuk posisi" adalah pertanyaan yang paling sering
+     * diajukan, dan datanya sebelumnya tidak pernah sampai ke model — jawaban
+     * hanya bisa menebak dari indikator, padahal sebabnya tercatat persis.
+     */
+    if (blockerRes.status === 'fulfilled' && blockerRes.value) {
+      const b = blockerRes.value;
+      dataUsed.push('alasan penahan');
+      blocks.push(
+        '',
+        '== KENAPA BOT MENAHAN ENTRY (24 jam terakhir) ==',
+        `Sinyal dinilai: ${b.totalSignals}, sinyal BUY: ${b.buySignals}, dieksekusi: ${b.executedSignals}`,
+      );
+
+      if (b.blockers?.length) {
+        blocks.push('Filter yang paling sering menahan:');
+        for (const x of b.blockers.slice(0, 6)) {
+          blocks.push(`- ${x.reason} (${x.count}x, ${x.percentOfSignals.toFixed(0)}% dari sinyal)`);
+        }
+      } else {
+        blocks.push('Tidak ada filter yang tercatat menahan.');
+      }
+
+      if (b.nearMisses?.length) {
+        blocks.push('Nyaris lolos:');
+        for (const n of b.nearMisses.slice(0, 3)) {
+          blocks.push(`- ${n.pair.toUpperCase()} kekuatan ${n.strength}, tertahan: ${n.blockedBy}`);
+        }
+      }
+    }
+
+    /**
+     * Performa, SELALU disertai jumlah trade.
+     *
+     * Tanpa jumlahnya, model akan menyimpulkan dari win rate yang dihitung dari
+     * segelintir trade seolah itu bukti. Angkanya harus ada agar keterbatasan
+     * itu bisa dinyatakan, bukan disembunyikan.
+     */
+    if (perfRes.status === 'fulfilled' && perfRes.value) {
+      const perf: any = perfRes.value;
+      dataUsed.push('performa');
+      blocks.push('', '== PERFORMA ==', `Jumlah trade selesai: ${perf.totalTrades ?? 0}`);
+
+      if ((perf.totalTrades ?? 0) > 0) {
+        blocks.push(
+          `Win rate: ${(perf.winRate ?? 0).toFixed(1)}%`,
+          `Total P&L: ${idr(perf.totalProfitLoss ?? perf.netProfit ?? 0)}`,
+        );
+        if ((perf.totalTrades ?? 0) < 30) {
+          blocks.push(
+            'CATATAN: jumlah trade masih sangat sedikit. Angka di atas BELUM bisa ' +
+              'dipakai menyimpulkan apakah strateginya menguntungkan.',
+          );
+        }
+      } else {
+        blocks.push('Belum ada trade yang selesai.');
+      }
     }
 
     return { context: blocks.filter((b) => b !== '').join('\n'), dataUsed };
@@ -241,10 +324,20 @@ export class AiAnalystService {
    * dalam bentuk ringkasan terstruktur. Operator yang belum memasang kunci AI
    * tidak kehilangan akses ke datanya.
    */
-  private withoutAi(context: string, pair: string | null): string {
+  private withoutAi(context: string, _pair: string | null): string {
+    /**
+     * Sebutkan SEBABNYA, jangan hanya "AI belum aktif".
+     *
+     * Kunci yang ditolak dan AI_PROVIDER yang belum disetel terlihat sama dari
+     * sisi operator, padahal tindakannya berbeda — dan menyarankan "isi
+     * AI_PROVIDER" kepada orang yang sudah mengisinya membuat sebab yang
+     * sebenarnya tidak pernah ditemukan.
+     */
+    const reason = this.ai.status().reason;
+
     return [
-      `_AI belum aktif, jadi ini ringkasan datanya apa adanya_`,
-      pair ? `_(isi *AI_PROVIDER* di .env untuk jawaban dalam bahasa biasa)_` : '',
+      `_Jawaban ini tanpa AI, jadi berupa ringkasan data apa adanya_`,
+      reason ? `_Sebabnya: ${reason}_` : '',
       '',
       '```',
       context.slice(0, 2500),

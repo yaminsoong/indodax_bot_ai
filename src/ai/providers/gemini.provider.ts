@@ -124,6 +124,7 @@ export class GeminiProvider implements AiProvider {
         `Gemini gagal${status ? ` (HTTP ${status})` : ''}: ${detail}`,
         this.name,
         status === 429 || status === 503,
+        status === 401 || status === 403,
       );
     }
   }
