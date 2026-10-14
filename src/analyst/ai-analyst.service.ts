@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { NewsService } from '../news/news.service';
+import { GroupSentimentService } from '../news/group-sentiment.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { PortfolioService } from '../trading/portfolio.service';
 import { TradingService } from '../trading/trading.service';
@@ -35,6 +36,14 @@ export interface AnalystAnswer {
  * dari artikel yang tertinggal beberapa jam dan menimpa harga bursa yang baru
  * saja diambil.
  */
+/**
+ * Minimum order Indodax, berlaku untuk SELURUH 464 pair IDR.
+ *
+ * Diukur langsung, bukan diasumsikan. Pair USDT memakai satuan lain: "min 1"
+ * di sana berarti 1 USDT, bukan Rp1.
+ */
+const MIN_ORDER_IDR = 10_000;
+
 const WEB_SEARCH_RULES = [
   '',
   'PENCARIAN WEB:',
@@ -113,6 +122,7 @@ export class AiAnalystService {
     private readonly ai: AiService,
     private readonly analysis: AnalysisService,
     private readonly news: NewsService,
+    private readonly groups: GroupSentimentService,
     private readonly globalMarket: GlobalMarketService,
     private readonly portfolio: PortfolioService,
     private readonly trading: TradingService,
@@ -238,7 +248,7 @@ export class AiAnalystService {
     );
 
     // Semua diambil bersamaan; satu sumber gagal tidak membatalkan sisanya.
-    const [analysisRes, globalRes, portfolioRes, newsRes, blockerRes, perfRes] =
+    const [analysisRes, globalRes, portfolioRes, newsRes, blockerRes, perfRes, historyRes] =
       await Promise.allSettled([
         pair ? this.analysis.analyzeNow(pair) : Promise.resolve(null),
         this.globalMarket.assess(),
@@ -249,6 +259,7 @@ export class AiAnalystService {
         // hanya bisa menebak dari indikator.
         this.trading.getBlockerStats(24),
         this.trading.getPerformanceSummary(),
+        this.trading.getTradeHistory(10),
       ]);
 
     if (analysisRes.status === 'fulfilled' && analysisRes.value) {
@@ -333,6 +344,32 @@ export class AiAnalystService {
       } else {
         blocks.push('Posisi terbuka: tidak ada');
       }
+
+      /**
+       * Daya beli, dinyatakan terang-terangan.
+       *
+       * Ini sebab paling sering yang TIDAK pernah bisa ditebak dari indikator:
+       * bot tidak membeli karena uang bebasnya di bawah minimum order bursa.
+       * Diukur saat blok ini dibuat: kas bebas Rp5.951 sementara minimum
+       * order Rp10.000 untuk SELURUH pair IDR -- jadi tidak ada satu pun
+       * entry yang mungkin, seberapa bagus pun sinyalnya.
+       *
+       * Tanpa baris ini model akan menjelaskan panjang soal ADX dan EMA untuk
+       * pertanyaan yang jawabannya sesederhana "uangnya tidak cukup".
+       */
+      const kas = p.cashIdr ?? 0;
+      if (kas < MIN_ORDER_IDR) {
+        blocks.push(
+          `DAYA BELI: TIDAK CUKUP. Kas bebas ${idr(kas)} di bawah minimum ` +
+            `order ${idr(MIN_ORDER_IDR)} yang berlaku untuk SEMUA pair IDR. ` +
+            'Tidak ada entry baru yang mungkin sampai posisi ditutup atau modal ditambah, ' +
+            'seberapa bagus pun sinyalnya.',
+        );
+      } else {
+        blocks.push(
+          `DAYA BELI: cukup. Kas bebas ${idr(kas)}, minimum order ${idr(MIN_ORDER_IDR)}.`,
+        );
+      }
     }
 
     /**
@@ -393,6 +430,100 @@ export class AiAnalystService {
         }
       } else {
         blocks.push('Belum ada trade yang selesai.');
+      }
+    }
+
+    /**
+     * Riwayat trade dengan PORSI FEE dan LAMA TAHAN.
+     *
+     * Dua angka ini yang menjelaskan kenapa strategi ini merugi, dan keduanya
+     * tidak terlihat dari ringkasan performa. Diukur pada trade LIVE pertama:
+     * rugi Rp40, dan Rp33 di antaranya -- 82% -- adalah fee. Harganya sendiri
+     * hanya bergerak -0,067%. Posisi ditahan 8 menit.
+     *
+     * Tanpa ini model akan menyimpulkan "strategi salah arah", padahal
+     * arahnya nyaris benar; yang salah adalah keluar sebelum pergerakan
+     * sempat menutup biayanya sendiri.
+     */
+    if (historyRes.status === 'fulfilled' && historyRes.value?.length) {
+      const closed = historyRes.value.filter((t) => t.status === 'CLOSED');
+      if (closed.length) {
+        dataUsed.push('riwayat trade');
+        blocks.push('', '== RIWAYAT TRADE SELESAI ==');
+
+        let totalFee = 0;
+        let totalPnl = 0;
+
+        for (const t of closed.slice(0, 8)) {
+          const fee = (t.entryFee ?? 0) + (t.exitFee ?? 0);
+          const pnl = t.profitLoss ?? 0;
+          totalFee += fee;
+          totalPnl += pnl;
+
+          const menit =
+            t.closedAt && t.openedAt
+              ? Math.round((new Date(t.closedAt).getTime() - new Date(t.openedAt).getTime()) / 60000)
+              : null;
+          const porsi = pnl !== 0 ? `${Math.abs((fee / pnl) * 100).toFixed(0)}% dari P&L` : 'tidak terdefinisi';
+
+          blocks.push(
+            `- #${t.id} ${String(t.pair).toUpperCase()}: P&L ${idr(pnl)}, fee ${idr(fee)} (${porsi})` +
+              (menit !== null ? `, ditahan ${menit} menit` : '') +
+              (t.closeReason ? `, sebab keluar: ${t.closeReason}` : ''),
+          );
+        }
+
+        blocks.push(
+          `Total ${closed.length} trade: P&L bersih ${idr(totalPnl)}, fee dibayar ${idr(totalFee)}`,
+        );
+
+        if (closed.length < 30) {
+          blocks.push(
+            `CATATAN: ${closed.length} trade terlalu sedikit untuk menyimpulkan apa pun ` +
+              'tentang keunggulan strategi. Jangan menyatakan kesimpulan statistik dari jumlah ini.',
+          );
+        }
+      }
+    }
+
+    /**
+     * Sentimen grup Telegram, bila ada grup yang diamati.
+     *
+     * Dinyatakan TEGAS sebagai bahan yang kepentingannya tidak diketahui.
+     * Grup sinyal adalah tempat pump-and-dump bekerja: orang yang sudah
+     * memegang koin meneriakkannya supaya orang lain membeli dari mereka.
+     * Karena itu keramaian dibaca sebagai tanda harga SUDAH bergerak, bukan
+     * sebagai alasan masuk.
+     */
+    if (this.groups.isEnabled()) {
+      const g = this.groups.assess(
+        this.config.params().tradingPairs.map((x) => x.toLowerCase().replace(/idr$/, '')),
+      );
+
+      if (g.messageCount > 0) {
+        dataUsed.push('grup telegram');
+        blocks.push(
+          '',
+          '== GRUP TELEGRAM (BAHAN, BUKAN REKOMENDASI) ==',
+          `${g.messageCount} pesan dari ${g.activeGroups} grup dalam 6 jam terakhir`,
+          `Berarah: ${g.positiveCount} positif, ${g.negativeCount} negatif (rata-rata ${g.averageScore})`,
+        );
+
+        if (g.mentions.length) {
+          blocks.push(
+            'Koin paling sering disebut: ' +
+              g.mentions.map((m) => `${m.coin.toUpperCase()} (${m.count}x)`).join(', '),
+          );
+        }
+
+        for (const r of this.groups.recentDirected(4)) {
+          blocks.push(`- [${r.score > 0 ? '+' : ''}${r.score}] "${r.text.slice(0, 120)}" (${r.hoursAgo} jam lalu)`);
+        }
+
+        blocks.push(`PERINGATAN: ${g.caveat}`);
+        if (g.inconclusive) {
+          blocks.push('Pesannya terlalu sedikit untuk disimpulkan.');
+        }
       }
     }
 

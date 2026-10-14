@@ -188,4 +188,65 @@ describe('SentimentService', () => {
   it('topik berat tanpa sentimen kuat berdampak MEDIUM', () => {
     expect(svc.impactOf('SEC publishes crypto custody guidance', 0, 3)).toBe('MEDIUM');
   });
+  // --- Bahasa Indonesia ---------------------------------------------------
+  //
+  // Bot berdagang di Indodax, jadi kebijakan Bappebti/OJK dan kabar bursa
+  // lokal penting -- dan nyaris tidak pernah muncul di feed Inggris. Sebelum
+  // kamus ini ada, SELURUH judul Indonesia dinilai 0: diukur langsung,
+  // "Bitcoin Anjlok Tajam, Investor Panik Jual" mendapat skor 0 sementara
+  // padanan Inggrisnya mendapat -24.
+
+  it('judul Indonesia yang jelas negatif dinilai negatif', () => {
+    const r = svc.analyze('Bitcoin Anjlok Tajam, Investor Panik Jual');
+    expect(r.sentiment).toBe('NEGATIVE');
+    expect(r.matchedTerms).toContain('anjlok');
+    expect(r.matchedTerms).toContain('panik');
+  });
+
+  it('judul Indonesia yang jelas positif dinilai positif', () => {
+    const r = svc.analyze('Harga Bitcoin Melonjak Setelah Aturan Baru Disetujui');
+    expect(r.sentiment).toBe('POSITIVE');
+  });
+
+  it('negasi Bahasa Indonesia membalik arah', () => {
+    // Tanpa negator Indonesia, "Tidak Anjlok" dinilai negatif -- kebalikan
+    // dari artinya.
+    const r = svc.analyze('Bitcoin Tidak Anjlok Meski Ada Kabar Buruk');
+    expect(r.sentiment).not.toBe('NEGATIVE');
+    expect(r.matchedTerms).toContain('!anjlok');
+  });
+
+  it('"belum melarang" tidak dibaca sebagai larangan', () => {
+    const r = svc.analyze('OJK Belum Melarang Aset Kripto');
+    expect(r.sentiment).not.toBe('NEGATIVE');
+  });
+
+  it('frasa bentuk aktif "cabut izin" terdeteksi', () => {
+    // Judul Indonesia sering memakai bentuk aktif tanpa awalan di-, sehingga
+    // hanya mendaftarkan "dicabut" membuat pola ini lolos.
+    const r = svc.analyze('OJK Cabut Izin Usaha Perusahaan Kripto');
+    expect(r.sentiment).toBe('NEGATIVE');
+    expect(r.matchedTerms).toContain('cabut izin');
+  });
+
+  it('frasa aktif juga mengikuti negasi', () => {
+    const r = svc.analyze('Tidak Ada Rencana Cabut Izin Bursa Kripto');
+    expect(r.sentiment).not.toBe('NEGATIVE');
+  });
+
+  it('judul Indonesia tanpa arah tetap netral', () => {
+    // Berita acara dan literasi tidak boleh mendapat arah apa pun.
+    const r = svc.analyze('OJK dan FEB Gelar Literasi Keuangan Digital');
+    expect(r.sentiment).toBe('NEUTRAL');
+  });
+  it('bentuk aktif tanpa awalan di- juga tertangkap', () => {
+    // "Diblokir" tertangkap, tetapi "Blokir" di judul aktif lolos -- celah
+    // yang sama dengan "cabut izin".
+    expect(svc.analyze('Korea Selatan Blokir 27 Platform Kripto Ilegal').sentiment).toBe('NEGATIVE');
+    expect(svc.analyze('Pemerintah Larang Perdagangan Kripto').sentiment).toBe('NEGATIVE');
+  });
+
+  it('bentuk aktif tetap mengikuti negasi', () => {
+    expect(svc.analyze('Pemerintah Tidak Larang Kripto').sentiment).not.toBe('NEGATIVE');
+  });
 });

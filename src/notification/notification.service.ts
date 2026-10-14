@@ -214,6 +214,21 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     this.handlers.set(name.toLowerCase(), { handler, help });
   }
 
+  /**
+   * Pengamat pesan grup, dipasang oleh lapisan berita.
+   *
+   * Berupa callback alih-alih injeksi langsung supaya NotificationService
+   * tidak bergantung pada modul berita — ia sudah menjadi dependensi banyak
+   * modul lain, dan menambah arah ketergantungan baru akan membuat lingkaran.
+   *
+   * Mengembalikan true bila pesan diambil sebagai bahan pengamatan.
+   */
+  private groupObserver?: (chatId: string, chatTitle: string, text: string) => boolean;
+
+  registerGroupObserver(fn: (chatId: string, chatTitle: string, text: string) => boolean): void {
+    this.groupObserver = fn;
+  }
+
   private startPolling(): void {
     const poll = async () => {
       if (this.stopped) return;
@@ -248,8 +263,20 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     if (!message?.text) return;
 
     const fromChatId = String(message.chat.id);
-    // Hanya chat yang dikonfigurasi yang boleh mengendalikan bot.
+
+    /**
+     * Pengamat grup dipanggil SEBELUM gerbang perintah, tetapi tidak
+     * melemahkannya.
+     *
+     * Urutannya penting dan mudah salah: pengamat hanya MEMBACA dan selalu
+     * diakhiri `return`, sehingga pesan dari grup yang diamati tidak pernah
+     * sampai ke penangan perintah. Grup yang diamati karena itu tidak bisa
+     * menjalankan satu perintah pun — hanya chat yang dikonfigurasi bisa.
+     */
     if (fromChatId !== this.chatId) {
+      if (this.groupObserver?.(fromChatId, message.chat.title ?? '', message.text)) {
+        return;
+      }
       this.logger.warn(`Perintah dari chat tidak dikenal ditolak: ${fromChatId}`);
       return;
     }

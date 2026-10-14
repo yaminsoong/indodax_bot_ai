@@ -14,6 +14,7 @@ import { AnalysisService } from '../analysis/analysis.service';
 import { MarketIntelligenceService } from '../market-intelligence/market-intelligence.service';
 import { HealthService } from '../monitoring/health.service';
 import { NewsService } from '../news/news.service';
+import { GroupSentimentService } from '../news/group-sentiment.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
 import { OpportunityWatcherService } from './opportunity-watcher.service';
@@ -63,10 +64,29 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     private readonly opportunities: OpportunityWatcherService,
     private readonly affordability: AffordabilityService,
     private readonly menuUi: TelegramMenuService,
+    private readonly groupSentiment: GroupSentimentService,
   ) {}
 
   onApplicationBootstrap(): void {
     if (!this.notification.isEnabled()) return;
+
+    /**
+     * Pasang pengamat grup.
+     *
+     * Didaftarkan dari sini, bukan dari modul berita, karena hanya modul ini
+     * yang memegang NotificationService DAN lapisan berita sekaligus —
+     * memberi NotificationService ketergantungan ke modul berita akan
+     * membuat lingkaran.
+     */
+    if (this.groupSentiment.isEnabled()) {
+      this.notification.registerGroupObserver((chatId, title, text) =>
+        this.groupSentiment.observe(chatId, title, text),
+      );
+      this.logger.log(
+        `Mengamati ${this.groupSentiment.watchedGroups().length} grup Telegram ` +
+          '(hanya membaca; grup tidak bisa menjalankan perintah)',
+      );
+    }
 
     const reg = (name: string, help: string, fn: (args: string[]) => Promise<string>) =>
       this.notification.registerCommand(name, help, (args) => fn(args));

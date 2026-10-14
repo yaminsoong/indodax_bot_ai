@@ -15,6 +15,7 @@ describe('AiAnalystService', () => {
   let analysis: { analyzeNow: jest.Mock };
   let news: { assessCoin: jest.Mock; assessMarket: jest.Mock };
   let globalMarket: { assess: jest.Mock };
+  let groups: any;
   let portfolio: { getState: jest.Mock };
   let trading: any;
 
@@ -80,6 +81,13 @@ describe('AiAnalystService', () => {
         caveat: 'kamus kata',
       }),
     };
+    // Grup dimatikan secara bawaan: suite ini menguji konteks dari data bot,
+    // dan lapisan grup punya spec-nya sendiri di group-sentiment.spec.ts.
+    groups = {
+      isEnabled: jest.fn().mockReturnValue(false),
+      assess: jest.fn(),
+      recentDirected: jest.fn().mockReturnValue([]),
+    };
     globalMarket = {
       assess: jest.fn().mockResolvedValue({
         score: 78,
@@ -112,6 +120,19 @@ describe('AiAnalystService', () => {
           { pair: 'fartcoinidr', strength: 71, blockedBy: 'spread terlalu lebar', at: new Date() },
         ],
       }),
+      getTradeHistory: jest.fn().mockResolvedValue([
+        {
+          id: 1,
+          pair: 'dogeidr',
+          status: 'CLOSED',
+          profitLoss: -40.5,
+          entryFee: 16.5,
+          exitFee: 16.5,
+          openedAt: new Date('2026-10-13T10:00:00Z'),
+          closedAt: new Date('2026-10-13T10:08:00Z'),
+          closeReason: 'STRATEGY_EXIT',
+        },
+      ]),
       getPerformanceSummary: jest.fn().mockResolvedValue({
         totalTrades: 3,
         winRate: 33.3,
@@ -130,6 +151,7 @@ describe('AiAnalystService', () => {
       ai as any,
       analysis as any,
       news as any,
+      groups as any,
       globalMarket as any,
       portfolio as any,
       trading as any,
@@ -421,5 +443,54 @@ describe('AiAnalystService', () => {
 
     const r = await svc.ask('kabar apa?');
     expect(r.text.match(/- Reuters/g)).toHaveLength(1);
+  });
+  // --- Daya beli dan riwayat ----------------------------------------------
+
+  it('menyatakan terang-terangan ketika kas di bawah minimum order', async () => {
+    // Ini sebab yang TIDAK pernah bisa ditebak dari indikator. Tanpa baris
+    // ini model menjelaskan ADX dan EMA untuk pertanyaan yang jawabannya
+    // sesederhana "uangnya tidak cukup".
+    portfolio.getState.mockResolvedValue({ equityIdr: 16898, cashIdr: 5951, positions: [] });
+
+    await svc.ask('kenapa bot belum beli?');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+
+    expect(sent).toMatch(/DAYA BELI: TIDAK CUKUP/);
+    expect(sent).toMatch(/minimum order/);
+  });
+
+  it('kas yang cukup dinyatakan cukup, bukan dibiarkan kosong', async () => {
+    portfolio.getState.mockResolvedValue({ equityIdr: 60000, cashIdr: 50000, positions: [] });
+
+    await svc.ask('kenapa bot belum beli?');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+
+    expect(sent).toMatch(/DAYA BELI: cukup/);
+  });
+
+  it('riwayat trade menyertakan porsi fee dan lama tahan', async () => {
+    // Dua angka yang menjelaskan kenapa strategi ini merugi, dan keduanya
+    // tidak terlihat dari ringkasan performa.
+    await svc.ask('performa saya gimana');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+
+    expect(sent).toMatch(/RIWAYAT TRADE SELESAI/);
+    expect(sent).toMatch(/81% dari P&L|82% dari P&L/);
+    expect(sent).toMatch(/ditahan 8 menit/);
+  });
+
+  it('jumlah trade kecil disertai peringatan agar tidak disimpulkan', async () => {
+    await svc.ask('performa saya gimana');
+    const sent = ai.tryComplete.mock.calls[0][0].user as string;
+    expect(sent).toMatch(/terlalu sedikit untuk menyimpulkan/);
+  });
+
+  it('trade yang belum ditutup tidak masuk riwayat', async () => {
+    trading.getTradeHistory.mockResolvedValue([
+      { id: 2, pair: 'btcidr', status: 'OPEN', profitLoss: null, entryFee: 16 },
+    ]);
+
+    const r = await svc.ask('performa saya gimana');
+    expect(r.dataUsed).not.toContain('riwayat trade');
   });
 });

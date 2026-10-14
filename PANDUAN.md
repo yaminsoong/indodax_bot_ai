@@ -650,6 +650,106 @@ Rp14 ribu/bulan.
 Modelnya sendiri murah (Grok 4.1 Fast bahkan lebih murah dari Haiku); **datanya**
 yang mahal. Tunda sampai modal jauh lebih besar.
 
+### Pencarian web di /ask
+
+Model boleh mencari sendiri di web bila blok data tidak memuat yang ditanyakan.
+**Model yang memutuskan kapan mencari**, bukan kode bot — jadi pertanyaan yang
+sudah terjawab oleh data bot tidak menghabiskan kuota.
+
+```
+ASK_WEB_SEARCH=true     # bawaan hidup
+```
+
+Pagar yang berlaku:
+
+- **Angka dari bot selalu menang.** Harga, indikator, posisi, saldo, performa
+  diambil dari data bot. Artikel hampir selalu lebih tua, dan tanpa aturan ini
+  model akan menimpa harga bursa yang baru diambil dengan angka dari berita.
+- **Hasil pencarian adalah data, bukan instruksi.** Halaman web bisa memuat
+  teks yang menyuruh model melakukan sesuatu.
+- **Hanya /ask.** Jalur keputusan trading tidak pernah menyentuh web.
+- Sumber yang benar-benar dibuka ditampilkan di bawah jawaban, diambil dari
+  metadata sitasi — bukan dari nama situs yang disebut model dalam prosa.
+  Model kadang menyebut "menurut Reuters" tanpa membukanya.
+
+### Hemat kuota: AI untuk /ask, kamus kata untuk berita
+
+```
+NEWS_AI_SENTIMENT=false   # bawaan MATI
+```
+
+Tier gratis tipis — habis dalam ~30 panggilan sehari. Berita punya jalur kamus
+kata yang berfungsi **tanpa kuota sama sekali**, sedangkan /ask tanpa AI hanya
+bisa menyodorkan tabel data. Jadi kuota diprioritaskan ke /ask.
+
+Keberhasilan diukur dari `calls` pada `/api/ai/status`, **bukan** `available`.
+`available` hanya berarti "belum ketahuan gagal".
+
+Bila kunci ditolak (HTTP 401/403), AI langsung mati dan `reason` menyebutkannya.
+Keadaan itu **menempel** sampai proses dimulai ulang, karena kunci dibaca sekali
+saat start — mencoba lagi dengan kunci yang sama hanya membuang permintaan.
+
+### Sentimen Bahasa Indonesia
+
+Kamus semula hanya Inggris. Diukur langsung: "Bitcoin Anjlok Tajam, Investor
+Panik Jual" mendapat skor **0**, sementara padanan Inggrisnya mendapat **-24**.
+Seluruh judul berbahasa Indonesia dinilai netral.
+
+Sekarang kamus memuat kata Indonesia beserta **negatornya** (`tidak`, `tak`,
+`bukan`, `belum`) — tanpa negator, "Bitcoin Tidak Anjlok" dinilai negatif,
+kebalikan dari artinya. Bentuk aktif tanpa awalan di- juga didaftarkan
+(`blokir`, `larang`, `cabut izin`), karena judul Indonesia sering memakainya.
+
+### Grup Telegram
+
+```
+TELEGRAM_WATCH_GROUPS=      # kosong = mati
+```
+
+Isi dengan chat id grup, dipisah koma. Bot harus sudah diundang ke grupnya, dan
+privacy mode dimatikan lewat BotFather (`/setprivacy` → Disable) agar ia bisa
+melihat pesan yang bukan perintah.
+
+Tiga sifat yang menentukan, dan diuji:
+
+1. **Grup yang diamati tidak bisa menjalankan satu perintah pun.** Hanya
+   `TELEGRAM_CHAT_ID` yang bisa. Pengamat hanya membaca, dan teks berbentuk
+   perintah dari grup ditolak sebelum sampai ke penangan mana pun.
+2. **Hanya boleh menurunkan keyakinan.** Grup sinyal kripto adalah tempat
+   pump-and-dump bekerja: orang yang sudah memegang koin meneriakkannya supaya
+   orang lain membeli dari mereka. Memakainya sebagai alasan masuk berarti
+   menjadi pihak yang membeli di puncak.
+3. **Keramaian dibaca sebagai "harga sudah bergerak", bukan "akan bergerak".**
+
+Satu koin baru dilaporkan setelah disebut minimal 3 kali — satu orang menyebut
+sebuah koin bukan sentimen, itu satu orang.
+
+### Apa saja yang diketahui /ask
+
+| blok | isi |
+|---|---|
+| analisis teknikal | harga, EMA, RSI, ADX, ATR, order book |
+| berita | 48 jam + sentimennya |
+| pasar global | saham, dolar, emas, VIX, yield |
+| posisi bot | tiap posisi: masuk, sekarang, P&L, R-multiple |
+| **daya beli** | kas bebas vs minimum order Rp10.000 |
+| penahan entry | filter mana menahan, berapa kali, yang nyaris lolos |
+| performa | selalu disertai jumlah trade |
+| **riwayat trade** | porsi fee dan lama tahan per trade |
+| grup telegram | bila diaktifkan, ditandai sebagai bahan |
+
+Dua blok yang paling sering menjawab pertanyaan nyata:
+
+**Daya beli.** Sebab paling sering yang tidak bisa ditebak dari indikator: bot
+tidak membeli karena kas bebasnya di bawah Rp10.000. Tanpa blok ini model
+menjelaskan panjang soal ADX untuk pertanyaan yang jawabannya "uangnya tidak
+cukup".
+
+**Porsi fee.** Pada trade LIVE pertama: rugi Rp40, dan Rp33 di antaranya — 82%
+— adalah fee, sementara harganya sendiri hanya bergerak -0,067%. Tanpa angka
+ini model menyimpulkan "strategi salah arah", padahal arahnya nyaris benar;
+yang salah adalah keluar sebelum pergerakan menutup biayanya sendiri.
+
 ---
 
 ## Market Scanner
