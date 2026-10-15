@@ -836,7 +836,7 @@ export class TradingService {
     try {
       const candles = await this.indodax.getCandles(trade.pair, params.candleTimeframe, 60);
       if (candles.length >= 20) atr = this.technical.calculateATR(candles, 14);
-    } catch (err) {
+    } catch (err:any) {
       this.logger.warn(`ATR ${trade.pair} tidak terhitung: ${err.message}`);
     }
 

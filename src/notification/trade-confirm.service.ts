@@ -186,6 +186,7 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       '',
       `*Risiko:* ${idr(decision.riskAmountIdr)}`,
       `*R:R:* 1 : ${riskReward.toFixed(1)}`,
+      ...this.explainBlock(price, atr, decision, report),
       '',
       `_Usulan ini berlaku 5 menit._`,
     ].join('\n');
@@ -197,6 +198,89 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       ],
     ]);
     return '';
+  }
+
+  /**
+   * Bagian "kenapa" dan "dari mana angkanya" pada kartu order.
+   *
+   * Tanpa ini kartu hanya menampilkan hasil: harga, ukuran, stop, risiko.
+   * Operator tidak punya cara menilai apakah angka itu masuk akal, dan ketika
+   * sebuah usulan ditolak ia tidak bisa membedakan "aturannya bekerja" dari
+   * "botnya rusak" - persis kebingungan yang terjadi pada ZEREBROIDR.
+   *
+   * Yang ditampilkan adalah ARITMETIKA yang benar-benar dipakai, bukan
+   * ringkasan terpisah: jarak stop dari ATR, jatah risiko dari persentase
+   * ekuitas, lalu ukuran sebagai hasil bagi keduanya. Angka yang bisa
+   * dihitung ulang dengan tangan adalah angka yang bisa dipercaya.
+   */
+  private explainBlock(
+    price: number,
+    atr: number | undefined,
+    decision: {
+      stopLossPrice: number;
+      positionSize: number;
+      quantity: number;
+      riskAmountIdr: number;
+      initialRiskPerUnit: number;
+    },
+    report: { confluence?: { score?: number; regime?: string; decision?: string }; explanation?: { reasons?: string[]; risks?: string[] } } | null,
+  ): string[] {
+    const params = this.config.params();
+    const out: string[] = [];
+
+    const stopGap = price - decision.stopLossPrice;
+    const stopPercent = price > 0 ? (stopGap / price) * 100 : 0;
+
+    out.push('', '*— Strategi & penilaian —*', `Strategi: ${this.config.str('STRATEGY', 'bawaan')}`);
+
+    if (report?.confluence) {
+      const c = report.confluence;
+      out.push(
+        `Skor kualitas: ${c.score ?? '-'}/100 (${c.decision ?? '-'})`,
+        `Kondisi pasar: ${c.regime ?? '-'}`,
+        // Dinyatakan tegas: skor ini BUKAN peluang untung. Operator yang
+        // membacanya sebagai probabilitas akan menaikkan ukuran posisi pada
+        // skor tinggi, padahal skor tidak pernah menjanjikan itu.
+        '_Skor = kualitas setup menurut aturan, BUKAN peluang untung._',
+      );
+    }
+
+    const reasons = (report?.explanation?.reasons ?? []).slice(0, 4);
+    if (reasons.length) {
+      out.push('', '*— Kenapa dinilai layak —*', ...reasons.map((r) => `• ${r}`));
+    }
+
+    const risks = (report?.explanation?.risks ?? []).slice(0, 3);
+    if (risks.length) {
+      out.push('', '*— Yang perlu diwaspadai —*', ...risks.map((r) => `• ${r}`));
+    }
+
+    out.push('', '*— Dari mana angkanya —*');
+
+    if (atr && atr > 0) {
+      out.push(
+        `1. ATR = Rp ${fmtPrice(atr)} (${((atr / price) * 100).toFixed(2)}% dari harga)`,
+        `   _gejolak khas per bar; stop lebih rapat dari ini akan kena oleh_`,
+        `   _gerakan normal, bukan karena analisanya salah_`,
+        `2. Stop = harga − ATR × ${params.atrStopMultiplier} = Rp ${fmtPrice(decision.stopLossPrice)}`,
+      );
+    } else {
+      out.push(
+        `1. ATR tidak terbaca, dipakai stop minimum ${params.minStopPercent}%`,
+        `2. Stop = Rp ${fmtPrice(decision.stopLossPrice)}`,
+      );
+    }
+
+    out.push(
+      `3. Jarak stop = Rp ${fmtPrice(stopGap)} per koin (${stopPercent.toFixed(2)}%)`,
+      `4. Jatah risiko = ${params.riskPerTradePercent}% dari ekuitas = ${idr(decision.riskAmountIdr)}`,
+      `5. Ukuran = ${idr(decision.riskAmountIdr)} ÷ Rp ${fmtPrice(stopGap)} = ${decision.quantity.toFixed(6)} koin`,
+      `   = ${idr(decision.positionSize)}`,
+      '',
+      `_Bila stop kena, yang hilang ${idr(decision.riskAmountIdr)} — bukan ${idr(decision.positionSize)}._`,
+    );
+
+    return out;
   }
 
   /** Langkah kedua: eksekusi, setelah memvalidasi ulang. */

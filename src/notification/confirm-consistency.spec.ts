@@ -67,7 +67,18 @@ describe('Konsistensi konfirmasi order', () => {
       analysis: {},
       trading,
       risk,
-      config: { params: () => ({ makerEntry: false, orderFillTimeoutSeconds: 90, makerFillTimeoutSeconds: 300 }), mode: 'LIVE' },
+      config: {
+        params: () => ({
+          makerEntry: false,
+          orderFillTimeoutSeconds: 90,
+          makerFillTimeoutSeconds: 300,
+          atrStopMultiplier: 2,
+          minStopPercent: 0.8,
+          riskPerTradePercent: 1.5,
+        }),
+        str: (_k: string, _d: string) => 'EMA_SCALPING_V2',
+        mode: 'LIVE',
+      },
       intelligence: {},
       indodax,
       pending: new Map(),
@@ -228,5 +239,118 @@ describe('Konsistensi konfirmasi order', () => {
     await confirm('fartcoinidr:abc123');
     await confirm('fartcoinidr:abc123');
     expect(trading.openManualPosition).toHaveBeenCalledTimes(1);
+  });
+  // --- Kartu menjelaskan DARI MANA angkanya ------------------------------
+  //
+  // Tanpa bagian ini kartu hanya menampilkan hasil: harga, ukuran, stop,
+  // risiko. Operator tidak punya cara menilai apakah angka itu masuk akal,
+  // dan ketika sebuah usulan ditolak ia tidak bisa membedakan "aturannya
+  // bekerja" dari "botnya rusak".
+
+  describe('Penjelasan pada kartu order', () => {
+    const render = async (pair = 'fartcoinidr') => {
+      await (svc as any).onBuy(pair);
+      const kirim = (svc as any).notification.sendWithButtons.mock.calls;
+      return kirim.length ? (kirim[kirim.length - 1][0] as string) : '';
+    };
+
+    beforeEach(() => {
+      (svc as any).notification.sendWithButtons = jest.fn().mockResolvedValue(undefined);
+      (svc as any).intelligence = {
+        analyze: jest.fn().mockResolvedValue({
+          confluence: {
+            timeframe: '1H',
+            score: 72,
+            decision: 'TRADE_SETUP',
+            regime: 'BULL_TREND',
+          },
+          mtf: {
+            timeframes: {
+              '1H': { indicators: { volatility: { atr: 20 } } },
+            },
+          },
+          explanation: {
+            reasons: ['EMA tersusun bullish', 'Volume 180% dari rata-rata'],
+            risks: ['ATR tinggi, gerakan bisa lebar'],
+          },
+        }),
+      };
+      (svc as any).risk.takeProfitPlan = jest
+        .fn()
+        .mockReturnValue([{ level: 1, price: 1050, closePercent: 100, atR: 2 }]);
+    });
+
+    it('menyebut strategi yang dipakai', async () => {
+      expect(await render()).toMatch(/Strategi: EMA_SCALPING_V2/);
+    });
+
+    it('menyebut skor DAN menyatakan skor bukan peluang untung', async () => {
+      // Operator yang membaca skor sebagai probabilitas akan menaikkan ukuran
+      // posisi pada skor tinggi, padahal skor tidak pernah menjanjikan itu.
+      const t = await render();
+      expect(t).toMatch(/Skor kualitas: 72\/100/);
+      expect(t).toMatch(/BUKAN peluang untung/);
+    });
+
+    it('menyebut alasan kenapa dinilai layak', async () => {
+      const t = await render();
+      expect(t).toMatch(/EMA tersusun bullish/);
+      expect(t).toMatch(/Volume 180%/);
+    });
+
+    it('menyebut yang perlu diwaspadai, bukan hanya yang mendukung', async () => {
+      // Kartu yang hanya memuat alasan mendukung membuat operator menekan
+      // CONFIRM tanpa tahu apa yang bisa membatalkannya.
+      expect(await render()).toMatch(/ATR tinggi/);
+    });
+
+    it('menunjukkan aritmetika ukuran posisi langkah demi langkah', async () => {
+      const t = await render();
+      expect(t).toMatch(/Dari mana angkanya/);
+      expect(t).toMatch(/ATR = Rp/);
+      expect(t).toMatch(/Stop = harga − ATR × 2/);
+      expect(t).toMatch(/Jarak stop = Rp/);
+      expect(t).toMatch(/Jatah risiko = 1\.5% dari ekuitas/);
+      expect(t).toMatch(/Ukuran = /);
+    });
+
+    it('membedakan uang yang BERISIKO dari uang yang DIPAKAI', async () => {
+      // Kekeliruan paling mahal bagi pemula: menganggap seluruh nilai posisi
+      // adalah uang yang bisa hilang.
+      const t = await render();
+      expect(t).toMatch(/Bila stop kena, yang hilang/);
+    });
+
+    it('ATR tidak terbaca dinyatakan apa adanya, bukan disembunyikan', async () => {
+      (svc as any).intelligence.analyze = jest.fn().mockResolvedValue({
+        confluence: { timeframe: '1H', score: 70, decision: 'TRADE_SETUP', regime: 'BULL_TREND' },
+        mtf: { timeframes: { '1H': { indicators: {} } } },
+        explanation: { reasons: [], risks: [] },
+      });
+
+      const t = await render();
+      expect(t).toMatch(/ATR tidak terbaca/);
+      expect(t).toMatch(/stop minimum 0\.8%/);
+    });
+
+    it('analisis gagal total tidak menggagalkan kartu', async () => {
+      // Angka risiko tetap bisa dihitung tanpa laporan MI; kehilangan
+      // penjelasan lebih baik daripada kehilangan kartunya.
+      (svc as any).intelligence.analyze = jest.fn().mockRejectedValue(new Error('mati'));
+
+      const t = await render();
+      expect(t).toMatch(/KONFIRMASI ORDER/);
+      expect(t).toMatch(/Dari mana angkanya/);
+    });
+
+    it('usulan yang DITOLAK menyebut sebabnya, bukan kartu kosong', async () => {
+      risk.evaluateEntry.mockResolvedValue({
+        allowed: false,
+        reason: 'Jarak stop 7.18% melebihi batas 6%',
+      });
+
+      const r = await (svc as any).onBuy('zerebroidr');
+      expect(r).toMatch(/Jarak stop 7\.18%/);
+    });
   });
 });
