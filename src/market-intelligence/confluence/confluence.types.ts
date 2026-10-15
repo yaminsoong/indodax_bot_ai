@@ -116,6 +116,23 @@ export interface NoTradeThresholds {
    * dikonfigurasi, bukan ditanam di kode.
    */
   minAtrPercent: number;
+  /**
+   * Batas rasio BIAYA PULANG-PERGI terhadap ATR.
+   *
+   * Ini pengganti yang lebih jujur bagi `minAtrPercent`, yang memakai angka
+   * absolut dan karena itu tidak bisa membedakan pair murah dari pair mahal.
+   * Diukur pada 2026-10-15: BTC ATR 0,53%/jam dengan biaya 0,40% -> rasio
+   * 0,76x, artinya gerakan satu jam penuh hanya menutup tiga per empat
+   * biayanya. PAXG lebih buruk lagi: rasio 1,94x, mustahil secara aritmetika.
+   * Keduanya LOLOS `minAtrPercent` 0,4%.
+   *
+   * Sebaliknya ZEREBRO ATR 7,12% dengan biaya 0,76% -> rasio 0,11x: enam
+   * menit gerakan normal sudah menutup biayanya.
+   *
+   * 1,0 berarti gerakan satu bar penuh hanya cukup menutup biaya dan belum
+   * menghasilkan apa pun.
+   */
+  maxCostToAtrRatio: number;
   /** Volume relatif minimum pada timeframe acuan. */
   minRelativeVolume: number;
   /** Posisi harga dalam rentang yang dianggap "di tengah" dan dihindari. */
@@ -126,6 +143,8 @@ export interface NoTradeThresholds {
 }
 
 export const DEFAULT_NO_TRADE: NoTradeThresholds = {
+  // 1,0 = gerakan satu bar hanya menutup biaya. Di atas itu mustahil.
+  maxCostToAtrRatio: 1.0,
   minRiskReward: 1.5,
   minResistanceDistancePercent: 1.0,
   maxSupportDistancePercent: 8.0,
@@ -147,6 +166,16 @@ export interface OrderBookContext {
 
 export interface ConfluenceOptions {
   weights?: Partial<ConfluenceWeights>;
+  /**
+   * Biaya pulang-pergi dalam persen harga: fee dua sisi + spread.
+   *
+   * Dipasok pemanggil karena fee bersifat per-pair dan spread datang dari
+   * ringkasan pasar; engine ini tidak punya akses ke keduanya. Bila tidak
+   * diberikan, penilaian volatilitas kembali memakai ambang ATR absolut -
+   * backtest tidak punya data spread historis, dan kehilangan satu dimensi
+   * lebih baik daripada memakai biaya yang dikarang.
+   */
+  roundTripCostPercent?: number;
   noTrade?: Partial<NoTradeThresholds>;
   /** Kelipatan ATR untuk stop loss analitis. */
   atrStopMultiplier?: number;

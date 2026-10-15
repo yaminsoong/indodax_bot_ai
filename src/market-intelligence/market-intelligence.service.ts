@@ -14,6 +14,8 @@ import {
 import { FomoGuardService } from './fomo/fomo-guard.service';
 import { DEFAULT_FOMO, STRICT_FOMO, FomoAssessment } from './fomo/fomo-guard.types';
 import { SignalExplainerService, SignalExplanation } from './signal-explainer.service';
+import { IndodaxService } from '../indodax/indodax.service';
+import { PairRegistryService } from '../indodax/pair-registry.service';
 
 /** Hasil lengkap satu analisis: konteks, skor, dan penjelasan. */
 export interface MarketIntelligenceReport {
@@ -42,6 +44,14 @@ export interface AnalyzeOptions {
    */
   fomoGuard?: boolean;
   orderBook?: OrderBookContext;
+  /**
+   * Biaya pulang-pergi dalam persen harga: fee dua sisi + spread.
+   *
+   * Dipakai menilai apakah gerakan khas pair ini sanggup menutup biayanya.
+   * Tanpa angka ini, pair yang tenang DAN mahal tampak sama baiknya dengan
+   * pair yang tenang dan murah.
+   */
+  roundTripCostPercent?: number;
   /** Timpa kelipatan ATR untuk stop analitis (biasanya dari BotParams). */
   atrStopMultiplier?: number;
   targetMultiples?: [number, number, number];
@@ -75,7 +85,37 @@ export class MarketIntelligenceService {
     private readonly mtf: MultiTimeframeService,
     private readonly confluence: ConfluenceEngineService,
     private readonly explainer: SignalExplainerService,
+    private readonly indodax: IndodaxService,
+    private readonly pairs: PairRegistryService,
   ) {}
+
+  /**
+   * Biaya pulang-pergi pair ini dalam persen harga: fee dua sisi + spread.
+   *
+   * Dihitung DI SINI, bukan di tiap pemanggil. Sebelumnya hanya scanner yang
+   * memasoknya, sehingga `/analyze` dan scanner menilai volatilitas pair yang
+   * sama dengan ukuran berbeda — bentuk ketidaksinkronan yang sama dengan
+   * dashboard vs peluang dulu, dan operator tidak punya cara menebak mana
+   * yang benar.
+   *
+   * Fee TAKER dipakai karena jalur entry bot memang taker; itu juga asumsi
+   * yang konservatif. Spread diambil dari ringkasan pasar yang sudah
+   * di-cache, jadi tidak menambah permintaan ke bursa.
+   *
+   * Mengembalikan undefined bila spread tidak terbaca, dan engine lalu
+   * kembali ke ambang ATR absolut. Mengarang biaya akan menilai pair dengan
+   * angka yang tidak pernah diukur.
+   */
+  private roundTripCostPercent(pair: string): number | undefined {
+    try {
+      const spread = this.indodax.getCachedSpreadPercent(pair);
+      if (spread === null || spread === undefined) return undefined;
+      return this.pairs.takerFeeRate(pair) * 100 * 2 + spread;
+    } catch {
+      // Pair tidak dikenal registry: biarkan engine memakai jalur cadangan.
+      return undefined;
+    }
+  }
 
   /** Analisis satu pair dengan mengambil data terbaru dari exchange. */
   async analyze(pair: string, options: AnalyzeOptions = {}): Promise<MarketIntelligenceReport> {
@@ -85,7 +125,12 @@ export class MarketIntelligenceService {
       params.timeframes,
       params.barsPerTimeframe,
     );
-    return this.analyzeCandles(pair, candleSet, options);
+    return this.analyzeCandles(pair, candleSet, {
+      // Dihitung di sini supaya SELURUH pemanggil `analyze` menilai dengan
+      // ukuran yang sama. Pemanggil tetap bisa menimpanya (backtest).
+      roundTripCostPercent: this.roundTripCostPercent(pair),
+      ...options,
+    });
   }
 
   /**
@@ -107,6 +152,7 @@ export class MarketIntelligenceService {
       weights: params.weights,
       noTrade: params.noTrade,
       orderBook: options.orderBook,
+      roundTripCostPercent: options.roundTripCostPercent,
       atrStopMultiplier: options.atrStopMultiplier,
       targetMultiples: options.targetMultiples,
     };

@@ -143,6 +143,10 @@ export class MarketIntelligenceConfigService {
       ),
       maxAtrPercent: this.config.num('MI_MAX_ATR_PERCENT', DEFAULT_NO_TRADE.maxAtrPercent),
       minAtrPercent: this.config.num('MI_MIN_ATR_PERCENT', DEFAULT_NO_TRADE.minAtrPercent),
+      maxCostToAtrRatio: this.config.num(
+        'MI_MAX_COST_TO_ATR_RATIO',
+        DEFAULT_NO_TRADE.maxCostToAtrRatio,
+      ),
       minRelativeVolume: this.config.num(
         'MI_MIN_RELATIVE_VOLUME',
         DEFAULT_NO_TRADE.minRelativeVolume,

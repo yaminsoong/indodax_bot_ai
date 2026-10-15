@@ -212,6 +212,8 @@ export class SignalScannerService {
 
     for (const pair of pairs) {
       try {
+        // Biaya pulang-pergi dihitung di dalam `analyze`, bukan di sini,
+        // supaya scanner dan `/analyze` memakai ukuran yang sama.
         const report = await this.intelligence.analyze(pair, { direction });
         const tf = filter.timeframe ?? report.confluence.timeframe;
         const analysis = report.mtf.timeframes[tf];

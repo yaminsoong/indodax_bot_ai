@@ -12,6 +12,7 @@ import { StrategyRegistry } from '../strategy/strategy.registry';
 import { BotConfigService } from '../config/bot-config.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { MarketIntelligenceService } from '../market-intelligence/market-intelligence.service';
+import { MarketIntelligenceConfigService } from '../market-intelligence/mi-config.service';
 import { HealthService } from '../monitoring/health.service';
 import { NewsService } from '../news/news.service';
 import { GroupSentimentService } from '../news/group-sentiment.service';
@@ -65,6 +66,7 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     private readonly affordability: AffordabilityService,
     private readonly menuUi: TelegramMenuService,
     private readonly groupSentiment: GroupSentimentService,
+    private readonly intelligenceConfig: MarketIntelligenceConfigService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -822,7 +824,59 @@ export class TelegramCommandService implements OnApplicationBootstrap {
       }
     }
 
+    lines.push(...this.setupSummary());
+
     return lines.join('\n');
+  }
+
+  /**
+   * Keterangan tetap: strategi apa, risiko berapa, analisis apa.
+   *
+   * Ditampilkan pada SETIAP pemeriksaan peluang, termasuk yang kosong. Ketika
+   * hasilnya kosong, pertanyaan pertama operator selalu "kosong menurut
+   * ukuran siapa?" - dan tanpa jawabannya, hasil kosong terbaca seperti bot
+   * yang menganggur, bukan bot yang menolak.
+   *
+   * Angkanya dibaca dari konfigurasi yang SAMA dengan yang dipakai mengambil
+   * keputusan, bukan ditulis ulang di sini. Keterangan yang bisa menyimpang
+   * dari perilaku sebenarnya lebih buruk daripada tidak ada keterangan.
+   */
+  private setupSummary(): string[] {
+    const p = this.config.params();
+    const mi = this.intelligenceConfig.params();
+
+    return [
+      '',
+      '━━━━━━━━━━━━━━━━━━',
+      '*Dinilai dengan apa*',
+      '',
+      `*Strategi:* ${this.config.str('STRATEGY', 'bawaan')}`,
+      `  EMA 5/13/21 + RSI + ADX, bar ${p.candleTimeframe} menit`,
+      `  Konfirmasi tren HTF ${p.htfTimeframe} menit: ${p.requireHtfTrend ? 'wajib' : 'tidak'}`,
+      '',
+      '*Analisis:*',
+      `  Multi-timeframe ${(mi.timeframes ?? []).join(', ')}`,
+      '  8 dimensi: tren, struktur, momentum, volume,',
+      '  support/resistance, volatilitas, order book, R:R',
+      `  Gerbang FOMO: ${mi.fomoGuardEnabled ? 'aktif' : 'nonaktif'}`,
+      '  Berita + makro: hanya boleh MENURUNKAN skor',
+      '',
+      '*Risk management:*',
+      `  Risiko per trade: ${p.riskPerTradePercent}% ekuitas`,
+      `  Maks porsi 1 posisi: ${p.maxPositionPercent}% ekuitas`,
+      `  Stop: ${p.atrStopMultiplier}x ATR, dibatasi ${p.minStopPercent}%-${p.maxStopPercent}%`,
+      `  Rugi harian maks: ${p.maxDailyLossPercent}% · drawdown maks: ${p.maxDrawdownPercent}%`,
+      `  Rugi berurutan maks: ${p.maxConsecutiveLosses}x`,
+      '',
+      '*Ambang lolos:*',
+      `  Skor minimum: ${p.opportunityMinScore}/100`,
+      `  R:R minimum: 1 : ${mi.noTrade?.minRiskReward ?? '-'}`,
+      `  ATR maksimum: ${mi.noTrade?.maxAtrPercent ?? '-'}%`,
+      `  Biaya maks: ${mi.noTrade?.maxCostToAtrRatio ?? '-'}x gerakan per bar`,
+      '',
+      '_Skor adalah kualitas setup menurut aturan di atas —_',
+      '_BUKAN peluang untung._',
+    ];
   }
 
   /**
