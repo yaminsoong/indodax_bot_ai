@@ -44,6 +44,16 @@ export interface HealthReport {
  * Karena itu tiap komponen diperiksa secara AKTIF, bukan disimpulkan dari
  * ketiadaan galat. "Tidak ada error" bukan bukti bahwa sesuatu masih hidup.
  */
+/**
+ * Ambang "pengambilan candle macet".
+ *
+ * Dipasang DI ATAS jeda penyegar terjadwal (scanner tiap 15 menit) dengan
+ * kelonggaran, supaya satu pemindaian yang lambat atau terlewat tidak langsung
+ * menjadi alarm. Di bawah 15 menit, pemeriksaan ini akan menyala pada setiap
+ * siklus normal.
+ */
+const MARKET_DATA_STALE_AFTER_SECONDS = 25 * 60;
+
 @Injectable()
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
@@ -185,13 +195,39 @@ export class HealthService {
       };
     }
 
-    // Data 5m yang berumur lebih dari 10 menit berarti pengambilan candle macet.
-    const stale = ages.filter((a) => a.key.endsWith('|5m') && a.ageSeconds > 600);
-    if (stale.length) {
+    /**
+     * Yang diukur: APAKAH PENGAMBILAN CANDLE MASIH JALAN — bukan berapa lama
+     * sejak sebuah entri terakhir diminta.
+     *
+     * Versi sebelumnya menandai setiap entri 5m yang berumur lebih dari 10
+     * menit sebagai "pengambilan candle macet", dan itu keliru karena cache
+     * ini LAZY: ia hanya terisi ketika ada yang meminta. Tidak ada proses yang
+     * menyegarkannya di latar belakang.
+     *
+     * Akibatnya terukur. Scanner berjalan tiap 15 menit dan mengisi cache 5m
+     * untuk ~30 pair; TTL 5m hanya 75 detik, lalu entri itu menua di tempat.
+     * Pada menit ke-10 setelah pemindaian, pemeriksaan ini berteriak STALE —
+     * lalu pada menit ke-15 scanner menyegarkannya lagi. Jadi SETIAP siklus
+     * menghasilkan jendela ~5 menit berisi alarm palsu, dan jumlah "timeframe
+     * stale" yang dilaporkan hanyalah cerminan berapa pair yang terakhir
+     * dipindai (30 tepat setelah pindai, 5 beberapa saat kemudian).
+     *
+     * Alarm yang menyala saat tidak ada yang rusak melatih operator untuk
+     * mengabaikannya — dan alarm yang diabaikan tidak berguna saat benar-benar
+     * ada yang rusak.
+     *
+     * Penanda yang jujur adalah entri PALING BARU: bila TIDAK SATU PUN candle
+     * berhasil diambil dalam waktu lebih lama daripada jeda penyegar
+     * terjadwal, pengambilannya memang macet.
+     */
+    const termuda = Math.min(...ages.map((a) => a.ageSeconds));
+    if (termuda > MARKET_DATA_STALE_AFTER_SECONDS) {
       return this.fail(
         'Market Data',
         'STALE',
-        `${stale.length} timeframe 5m tidak diperbarui lebih dari 10 menit`,
+        `Tidak ada candle yang berhasil diambil selama ${Math.round(termuda / 60)} menit ` +
+          `(ambang ${MARKET_DATA_STALE_AFTER_SECONDS / 60} menit). ` +
+          'Pengambilan data pasar kemungkinan macet.',
       );
     }
 
