@@ -445,6 +445,12 @@ export class TradingService {
     const signalRef = buildSignalRef(pair, strategyName, barTime);
 
     if (this.inFlightEntries.has(signalRef)) {
+      // Sebab dicatat agar pesan ke operator menyebut keadaan sebenarnya,
+      // bukan "periksa log". Menekan tombol dua kali adalah hal yang wajar.
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason: 'order untuk sinyal yang sama sedang diproses - tunggu beberapa detik',
+      });
       this.logger.warn(`Entry ${pair.toUpperCase()} untuk sinyal ${signalRef} sedang diproses - dilewati`);
       return false;
     }
@@ -454,6 +460,12 @@ export class TradingService {
       this.logger.warn(
         `Sinyal ${signalRef} sudah menghasilkan trade #${duplicate.id} (${duplicate.status}) - order ganda dicegah`,
       );
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason:
+          `sinyal ini sudah menghasilkan trade #${duplicate.id} (${duplicate.status}). ` +
+          'Satu sinyal hanya boleh dieksekusi sekali - tunggu candle berikutnya',
+      });
       await this.audit.log({
         category: 'ORDER',
         event: 'DUPLICATE_ENTRY_BLOCKED',
@@ -488,6 +500,24 @@ export class TradingService {
     );
 
     if (!decision.allowed) {
+      /**
+       * Sebab penolakan WAJIB dicatat, bukan hanya di-audit.
+       *
+       * `openManualPosition` membaca `lastEntryFailure` untuk menyusun pesan
+       * ke operator. Sebelum ini, jalur risk engine hanya menulis ke log dan
+       * tabel audit lalu mengembalikan false - sehingga operator menerima
+       * "Order tidak tereksekusi - periksa log" padahal sebabnya sudah
+       * diketahui persis.
+       *
+       * Diukur pada kasus nyata: ZEREBROIDR ditolak dengan "Jarak stop 7.18%
+       * melebihi batas 6%", tetapi kartu Telegram hanya menampilkan "periksa
+       * log". Operator menyimpulkan ada kerusakan, padahal aturannya bekerja
+       * sebagaimana mestinya.
+       */
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason: decision.reason ?? 'ditolak risk engine tanpa sebab tercatat',
+      });
       this.logger.log(`Risiko menolak BUY ${pair}: ${decision.reason}`);
       await this.audit.log({
         category: 'RISK',
