@@ -102,7 +102,20 @@ describe('Sebab penolakan entry sampai ke operator', () => {
     expect((svc as any).lastEntryFailure.get('zerebroidr')).toEqual({
       missed: false,
       reason: 'jatah risiko harian habis',
+      // Penolakan aturan terjadi SEBELUM ada order yang dikirim. Penanda ini
+      // menentukan apakah kartu progres boleh menampilkan "Mengirim ke
+      // Indodax" sebagai tercapai.
+      reachedExchange: false,
     });
+  });
+
+  it('penolakan aturan dilaporkan sebagai BELUM menyentuh bursa', async () => {
+    // Kartu yang mengaku sudah mengirim membuat operator mencari masalah di
+    // bursa untuk order yang tidak pernah ada di sana.
+    risk.evaluateEntry.mockResolvedValue({ allowed: false, reason: 'ADX terlalu rendah' });
+
+    const r = await svc.openManualPosition('zerebroidr');
+    expect(r.reachedExchange).toBe(false);
   });
 
   it('penolakan risk BUKAN "missed" — maker yang lewat berbeda jenis', async () => {

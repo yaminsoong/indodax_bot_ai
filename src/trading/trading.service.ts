@@ -424,7 +424,19 @@ export class TradingService {
    *
    * Operator yang menekan CONFIRM berhak tahu mana yang terjadi.
    */
-  private readonly lastEntryFailure = new Map<string, { missed: boolean; reason: string }>();
+  /**
+   * Kegagalan entry terakhir per pair.
+   *
+   * `reachedExchange` menentukan apa yang boleh ditampilkan kartu progres.
+   * Tanpa penanda ini kartu menampilkan "Mengirim ke Indodax" sebagai TERCAPAI
+   * pada setiap kegagalan - termasuk penolakan yang terjadi sebelum satu byte
+   * pun dikirim. Operator lalu mencari masalah di bursa, padahal ordernya
+   * tidak pernah ada di sana.
+   */
+  private readonly lastEntryFailure = new Map<
+    string,
+    { missed: boolean; reason: string; reachedExchange: boolean }
+  >();
 
   private async openPosition(
     pair: string,
@@ -450,6 +462,7 @@ export class TradingService {
       this.lastEntryFailure.set(pair.toLowerCase(), {
         missed: false,
         reason: 'order untuk sinyal yang sama sedang diproses - tunggu beberapa detik',
+        reachedExchange: false,
       });
       this.logger.warn(`Entry ${pair.toUpperCase()} untuk sinyal ${signalRef} sedang diproses - dilewati`);
       return false;
@@ -465,6 +478,7 @@ export class TradingService {
         reason:
           `sinyal ini sudah menghasilkan trade #${duplicate.id} (${duplicate.status}). ` +
           'Satu sinyal hanya boleh dieksekusi sekali - tunggu candle berikutnya',
+        reachedExchange: false,
       });
       await this.audit.log({
         category: 'ORDER',
@@ -517,6 +531,7 @@ export class TradingService {
       this.lastEntryFailure.set(pair.toLowerCase(), {
         missed: false,
         reason: decision.reason ?? 'ditolak risk engine tanpa sebab tercatat',
+        reachedExchange: false,
       });
       this.logger.log(`Risiko menolak BUY ${pair}: ${decision.reason}`);
       await this.audit.log({
@@ -572,6 +587,8 @@ export class TradingService {
         this.lastEntryFailure.set(pair.toLowerCase(), {
           missed: true,
           reason: outcome.error ?? 'limit maker tidak tersentuh harga',
+          // Limit maker memang DIKIRIM, hanya tidak tersentuh harga.
+          reachedExchange: true,
         });
         this.logger.log(`Entry maker ${pair.toUpperCase()} tidak terisi - peluang dilewat`);
         await this.audit.log({
@@ -586,6 +603,7 @@ export class TradingService {
       this.lastEntryFailure.set(pair.toLowerCase(), {
         missed: false,
         reason: outcome.error ?? 'tidak terisi',
+        reachedExchange: true,
       });
       this.logger.error(`BUY ${pair} tidak tereksekusi: ${outcome.error}`);
       await this.notification.sendAlert(
@@ -836,7 +854,7 @@ export class TradingService {
     try {
       const candles = await this.indodax.getCandles(trade.pair, params.candleTimeframe, 60);
       if (candles.length >= 20) atr = this.technical.calculateATR(candles, 14);
-    } catch (err:any) {
+    } catch (err) {
       this.logger.warn(`ATR ${trade.pair} tidak terhitung: ${err.message}`);
     }
 
@@ -1231,6 +1249,14 @@ export class TradingService {
      * yang tidak ada.
      */
     missed?: boolean;
+    /**
+     * True bila order benar-benar sudah dikirim ke Indodax.
+     *
+     * Dipakai kartu progres untuk menentukan tahap mana yang boleh ditandai
+     * tercapai. Penolakan aturan terjadi SEBELUM pengiriman, dan menampilkannya
+     * sebagai "sudah dikirim" membuat operator mencari masalah di bursa.
+     */
+    reachedExchange?: boolean;
   }> {
     const params = this.config.params();
     const strategy = this.strategies.active();
@@ -1301,6 +1327,7 @@ export class TradingService {
       return {
         success: false,
         missed: true,
+        reachedExchange: true,
         message: [
           `${pair.toUpperCase()} — limit maker tidak terisi dalam ${timeout} detik.`,
           '',
@@ -1315,6 +1342,10 @@ export class TradingService {
 
     return {
       success: false,
+      // Tanpa catatan kegagalan, anggap order BELUM sampai bursa: itu
+      // kemungkinan yang lebih besar, dan salah ke arah ini hanya membuat
+      // kartu kurang mengklaim - bukan mengklaim yang tidak terjadi.
+      reachedExchange: failure?.reachedExchange ?? false,
       message: failure?.reason
         ? `${pair.toUpperCase()} ditolak: ${failure.reason}`
         : 'Order tidak tereksekusi — periksa log',

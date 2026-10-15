@@ -154,4 +154,94 @@ describe('OrderProgressService', () => {
     await expect(svc.start(state())).resolves.toBeNull();
     await expect(svc.update(null, state())).resolves.toBeUndefined();
   });
+  // --- Tahap gagal yang sebenarnya ---------------------------------------
+  //
+  // Kartu TIDAK boleh mengaku sudah melakukan sesuatu yang tidak terjadi.
+  // Kasus nyata: ZEREBROIDR ditolak risk engine sebelum satu byte pun
+  // dikirim, tetapi kartu menampilkan "Mengirim ke Indodax" sebagai tercapai.
+  // Operator lalu mencari masalah di bursa untuk order yang tidak pernah ada
+  // di sana.
+
+  describe('Jejak langkah saat gagal', () => {
+    const base = {
+      pair: 'zerebroidr',
+      referencePrice: 719,
+      positionSizeIdr: 10932,
+      riskIdr: 87,
+      stopLossPrice: 713.25,
+    };
+
+    /** Ikon di depan satu label langkah. */
+    const ikon = (teks: string, label: string): string => {
+      const baris = teks.split('\n').find((l) => l.includes(label)) ?? '';
+      return baris.trim().charAt(0);
+    };
+
+    it('ditolak sebelum dikirim: HANYA tahap pemeriksaan yang ditandai', () => {
+      const t = svc.render({
+        ...base,
+        phase: 'DITOLAK',
+        failedAtPhase: 'MEMERIKSA_RISIKO',
+        detail: 'Jarak stop 7.18% melebihi batas 6%',
+      } as any);
+
+      expect(ikon(t, 'Memeriksa risiko')).toBe('✕');
+      expect(ikon(t, 'Menghitung ukuran')).toBe('○');
+      expect(ikon(t, 'Mengirim ke Indodax')).toBe('○');
+      expect(ikon(t, 'Menunggu terisi')).toBe('○');
+    });
+
+    it('ditolak sebelum dikirim TIDAK mengklaim order sudah dikirim', () => {
+      const t = svc.render({
+        ...base,
+        phase: 'DITOLAK',
+        failedAtPhase: 'MEMERIKSA_RISIKO',
+      } as any);
+
+      const baris = t.split('\n').find((l) => l.includes('Mengirim ke Indodax')) ?? '';
+      expect(baris).not.toMatch(/●/);
+    });
+
+    it('maker yang dikirim tapi tidak terisi menandai tahap menunggu', () => {
+      // Di sini ordernya MEMANG dikirim; tiga langkah pertama benar tercapai.
+      const t = svc.render({
+        ...base,
+        phase: 'TIDAK_TERISI',
+        failedAtPhase: 'MENUNGGU_TERISI',
+      } as any);
+
+      expect(ikon(t, 'Memeriksa risiko')).toBe('●');
+      expect(ikon(t, 'Mengirim ke Indodax')).toBe('●');
+      expect(ikon(t, 'Menunggu terisi')).toBe('✕');
+    });
+
+    it('gagal di bursa menandai tahap menunggu, bukan pemeriksaan', () => {
+      const t = svc.render({
+        ...base,
+        phase: 'DITOLAK',
+        failedAtPhase: 'MENUNGGU_TERISI',
+        detail: 'amount has more precision than allowed',
+      } as any);
+
+      expect(ikon(t, 'Mengirim ke Indodax')).toBe('●');
+      expect(ikon(t, 'Menunggu terisi')).toBe('✕');
+    });
+
+    it('tanpa failedAtPhase perilaku lama dipertahankan', () => {
+      // Pemanggil lama tidak boleh berubah artinya hanya karena field baru.
+      const t = svc.render({ ...base, phase: 'DITOLAK' } as any);
+      expect(ikon(t, 'Menunggu terisi')).toBe('✕');
+    });
+
+    it('nama tahap yang tidak dikenal tidak merusak kartu', () => {
+      const t = svc.render({ ...base, phase: 'DITOLAK', failedAtPhase: 'ENTAH' } as any);
+      expect(t).toMatch(/DITOLAK/);
+      expect(t).toMatch(/Memeriksa risiko/);
+    });
+
+    it('berhasil tetap menandai seluruh langkah tercapai', () => {
+      const t = svc.render({ ...base, phase: 'TERISI' } as any);
+      expect(ikon(t, 'Selesai')).toBe('●');
+    });
+  });
 });

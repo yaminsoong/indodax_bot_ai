@@ -29,6 +29,15 @@ export interface OrderProgressState {
   /** Detik tersisa sebelum timeout order. */
   secondsLeft?: number;
   detail?: string;
+  /**
+   * Tahap tempat prosesnya benar-benar berhenti.
+   *
+   * Tanpa ini setiap kegagalan menandai tiga langkah pertama sebagai tercapai,
+   * termasuk "Mengirim ke Indodax" - padahal penolakan aturan terjadi sebelum
+   * ada order yang dikirim. Kartu yang mengaku sudah mengirim membuat operator
+   * mencari masalah di bursa untuk order yang tidak pernah ada di sana.
+   */
+  failedAtPhase?: OrderPhase;
 }
 
 /** Urutan tahap yang ditampilkan sebagai jejak langkah. */
@@ -94,8 +103,20 @@ export class OrderProgressService {
       } else if (state.phase === 'TERISI_SEBAGIAN') {
         icon = i < 3 ? '●' : i === 3 ? '◐' : '○';
       } else if (done) {
-        // Gagal di tengah: langkah sebelum titik gagal tetap tercapai.
-        icon = i < 3 ? '●' : i === 3 ? '✕' : '○';
+        /**
+         * Gagal di tengah: tandai TEPAT di tahap tempat prosesnya berhenti.
+         *
+         * `failedAtPhase` berasal dari pemanggil, yang tahu apakah ordernya
+         * sudah dikirim. Bila tidak diberikan, titik gagal diletakkan di
+         * "Menunggu terisi" seperti perilaku lama - tetapi pemanggil pada
+         * jalur order selalu memberikannya.
+         */
+        const failIndex =
+          state.failedAtPhase !== undefined
+            ? STEPS.findIndex((x) => x.phase === state.failedAtPhase)
+            : 3;
+        const titik = failIndex >= 0 ? failIndex : 3;
+        icon = i < titik ? '●' : i === titik ? '✕' : '○';
       } else if (activeIndex >= 0) {
         icon = i < activeIndex ? '●' : i === activeIndex ? '◐' : '○';
       }

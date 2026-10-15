@@ -422,7 +422,12 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       }
 
       if (result.missed) {
-        await this.progress.update(messageId, { ...base, phase: 'TIDAK_TERISI' });
+        // Limit maker memang dikirim, hanya tidak tersentuh harga.
+        await this.progress.update(messageId, {
+          ...base,
+          phase: 'TIDAK_TERISI',
+          failedAtPhase: 'MENUNGGU_TERISI',
+        });
         return '';
       }
 
@@ -430,6 +435,9 @@ export class TradeConfirmService implements OnApplicationBootstrap {
         ...base,
         phase: 'DITOLAK',
         detail: result.message,
+        // Penolakan aturan terjadi sebelum ada order yang dikirim; jangan
+        // menampilkan "Mengirim ke Indodax" sebagai tercapai.
+        failedAtPhase: result.reachedExchange ? 'MENUNGGU_TERISI' : 'MEMERIKSA_RISIKO',
       });
       return '';
     } finally {
