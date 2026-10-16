@@ -25,3 +25,6 @@ npm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Cadangan .env sebelum mengalihkan mode
+.env.backup-*

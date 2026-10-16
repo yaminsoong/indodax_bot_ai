@@ -1391,8 +1391,29 @@ export class TradingService {
     return this.tradeRepo.find({ where: { status: 'FAILED' }, order: { updatedAt: 'DESC' } });
   }
 
-  async getTradeHistory(limit = 50): Promise<Trade[]> {
-    return this.tradeRepo.find({ order: { createdAt: 'DESC' }, take: limit });
+  /**
+   * Riwayat trade MODE SEKARANG saja.
+   *
+   * Dulu mengembalikan semua mode tercampur. Itu berbahaya justru ketika
+   * lapisan ini paling berguna: begitu mode simulasi dinyalakan untuk
+   * mengumpulkan sampel, trade simulasi akan bercampur dengan trade LIVE
+   * sungguhan di dalam konteks /ask dan di laporan performa — dan operator
+   * tidak punya cara membedakannya.
+   *
+   * `getPerformanceSummary` sudah menyaring per mode sejak awal; perbedaan
+   * keduanya adalah bentuk ketidaksinkronan yang sama dengan /peluang vs
+   * menu skor. Dua fungsi yang menjawab pertanyaan sama harus memakai
+   * penyaring sama.
+   *
+   * `allModes` disediakan untuk pemanggil yang memang ingin melihat keduanya
+   * (mis. audit), dan harus menyatakannya secara eksplisit.
+   */
+  async getTradeHistory(limit = 50, allModes = false): Promise<Trade[]> {
+    return this.tradeRepo.find({
+      where: allModes ? {} : { mode: this.config.mode },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
   }
 
   /**
