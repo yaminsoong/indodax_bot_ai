@@ -14,6 +14,27 @@ export interface BacktestConfig {
    */
   barsOffsetFromEnd?: number;
   initialCapital: number;
+  /**
+   * Hentikan pengujian setelah N kerugian beruntun, seperti LIVE.
+   *
+   * Default FALSE, dan itu keputusan sadar. Di LIVE, kill switch kerugian
+   * beruntun adalah lapisan PELINDUNG MODAL yang menuntut manusia menilai
+   * ulang: `getConsecutiveLosses` hanya bersih setelah ada trade untung, dan
+   * selama entry diblokir trade untung tidak mungkin terjadi. Di LIVE itu
+   * benar — ada operator yang bisa mengubah setelan atau turun tangan.
+   *
+   * Di backtest TIDAK ADA operator. Mengaktifkannya berarti setiap pengujian
+   * berhenti di deret rugi PERTAMA lalu tetap melaporkan periode penuh.
+   * Terukur pada 16 Okt 2026: uji 25 pair / 102 hari hanya benar-benar
+   * berdagang 4 HARI (4% periode), uji 8 pair / 60 hari hanya 16 hari (27%).
+   * Seluruh pengukuran hari itu — P&L kotor, perbandingan maker, sweep offset
+   * — diam-diam dihitung dari potongan sekecil itu.
+   *
+   * Keunggulan strategi dan pelindung modal adalah dua hal berbeda. Yang
+   * pertama diukur di sini; yang kedua dilaporkan terpisah lewat
+   * `killSwitchWouldFireAt`.
+   */
+  haltOnConsecutiveLosses?: boolean;
   strategy: string;
   /** Fee taker per sisi dalam persen; default mengikuti data pair Indodax. */
   feePercentOverride?: number;
@@ -160,6 +181,29 @@ export interface BacktestMetrics {
 
 export interface BacktestReport {
   config: BacktestConfig;
+  /**
+   * Rentang yang BENAR-BENAR berdagang, bukan rentang yang diminta.
+   *
+   * `barsTested` menghitung bar yang dilewati simulasi; angka itu bisa jauh
+   * lebih besar daripada bar yang masih membuka posisi bila ada yang
+   * menghentikan entry di tengah jalan. Melaporkan hanya `barsTested`
+   * membuat hasil dari 4 hari tampak sebagai hasil 102 hari.
+   */
+  tradedSpan: {
+    firstEntry: string | null;
+    lastExit: string | null;
+    daysRequested: number;
+    daysTraded: number;
+    percentOfPeriod: number;
+  };
+  /**
+   * Kapan kill switch kerugian beruntun AKAN menyala, bila diaktifkan.
+   *
+   * Selalu dihitung, bahkan ketika kill switch tidak diaktifkan — informasinya
+   * tetap berharga: ia memberi tahu kapan seorang operator LIVE akan dipaksa
+   * berhenti dan menilai ulang.
+   */
+  killSwitchWouldFireAt: string | null;
   params: BotParams;
   periodStart: string;
   periodEnd: string;

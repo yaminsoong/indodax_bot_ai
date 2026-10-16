@@ -105,6 +105,10 @@ export class BacktestController {
       periodStart: report.periodStart,
       periodEnd: report.periodEnd,
       barsTested: report.barsTested,
+      // Rentang yang benar-benar berdagang; tanpa ini `barsTested` terbaca
+      // sebagai jaminan bahwa seluruh periode diuji.
+      tradedSpan: report.tradedSpan,
+      killSwitchWouldFireAt: report.killSwitchWouldFireAt,
       metrics: report.metrics,
       warnings: report.warnings,
       // Daftar trade penuh dipotong agar respons tetap wajar.

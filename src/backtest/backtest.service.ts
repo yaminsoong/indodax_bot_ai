@@ -226,7 +226,7 @@ export class BacktestService {
     }
 
     // ── Simulasi ────────────────────────────────────────────────────────
-    const { trades, equityCurve, barsTested, periodStart, periodEnd } = this.simulate(
+    const { trades, equityCurve, barsTested, periodStart, periodEnd, killSwitchFiredAt } = this.simulate(
       cfg,
       params,
       strategy,
@@ -259,12 +259,60 @@ export class BacktestService {
       'Filter order book tidak aktif saat backtest (tidak ada data historis kedalaman pasar).',
     );
 
+    /**
+     * Rentang yang BENAR-BENAR berdagang.
+     *
+     * `barsTested` menghitung bar yang dilewati simulasi, bukan bar yang masih
+     * membuka posisi. Selisihnya pernah sangat besar: uji 25 pair atas 102 hari
+     * hanya berdagang 4 hari, dan laporannya tetap menyebut 2.440 bar teruji.
+     * Angka seperti itu membuat hasil dari segelintir hari dipercaya sebagai
+     * hasil tiga bulan.
+     */
+    const msHari = 86_400_000;
+    const mulai = new Date(periodStart).getTime();
+    const selesai = new Date(periodEnd).getTime();
+    const daysRequested = Math.max(1, Math.round((selesai - mulai) / msHari));
+    const firstEntry = trades.length ? new Date(trades[0].entryTime * 1000) : null;
+    const lastExit = trades.length
+      ? new Date(Math.max(...trades.map((t) => t.exitTime)) * 1000)
+      : null;
+    const daysTraded = lastExit ? Math.max(1, Math.round((lastExit.getTime() - mulai) / msHari)) : 0;
+
+    const tradedSpan = {
+      firstEntry: firstEntry ? firstEntry.toISOString() : null,
+      lastExit: lastExit ? lastExit.toISOString() : null,
+      daysRequested,
+      daysTraded,
+      percentOfPeriod: Number(((daysTraded / daysRequested) * 100).toFixed(1)),
+    };
+
+    if (killSwitchFiredAt !== null) {
+      const kapan = new Date(killSwitchFiredAt * 1000);
+      warnings.push(
+        `Kill switch ${params.maxConsecutiveLosses} kerugian beruntun terpenuhi pada ` +
+          `${kapan.toISOString().slice(0, 16).replace('T', ' ')}` +
+          (cfg.haltOnConsecutiveLosses
+            ? ' dan pengujian DIHENTIKAN di situ. Angka di bawah hanya mencakup sampai titik itu.'
+            : '. Pengujian DILANJUTKAN (haltOnConsecutiveLosses=false) agar keunggulan strategi ' +
+              'terukur atas periode penuh; di LIVE, operator akan dipaksa berhenti dan menilai ulang di titik itu.'),
+      );
+    }
+
+    if (tradedSpan.percentOfPeriod < 80 && trades.length) {
+      warnings.push(
+        `Trade hanya terjadi pada ${tradedSpan.daysTraded} dari ${tradedSpan.daysRequested} hari ` +
+          `(${tradedSpan.percentOfPeriod}% periode). Angka di bawah TIDAK mewakili seluruh rentang.`,
+      );
+    }
+
     const report: BacktestReport = {
       config: cfg,
       params,
       periodStart,
       periodEnd,
       barsTested,
+      tradedSpan,
+      killSwitchWouldFireAt: killSwitchFiredAt ? new Date(killSwitchFiredAt * 1000).toISOString() : null,
       metrics,
       trades,
       equityCurve,
@@ -295,6 +343,8 @@ export class BacktestService {
     barsTested: number;
     periodStart: string;
     periodEnd: string;
+    /** Kapan kill switch kerugian beruntun terpenuhi; null bila tidak pernah. */
+    killSwitchFiredAt: number | null;
   } {
     // Statistik Market Intelligence direset per jalan agar tidak bocor antar
     // kombinasi saat parameter sweep menjalankan puluhan backtest berurutan.
@@ -312,6 +362,8 @@ export class BacktestService {
     /** Waktu selesai cooldown per pair (epoch detik). */
     const cooldownUntil = new Map<string, number>();
     let consecutiveLosses = 0;
+    /** Waktu pertama kill switch kerugian beruntun terpenuhi (epoch detik). */
+    let killSwitchFiredAt: number | null = null;
 
     let cash = cfg.initialCapital;
     let peakEquity = cfg.initialCapital;
@@ -447,7 +499,20 @@ export class BacktestService {
       }
 
       // ── 2. Cari entry baru ────────────────────────────────────────────
-      const killed = consecutiveLosses >= params.maxConsecutiveLosses;
+      /**
+       * Kill switch kerugian beruntun: DICATAT selalu, MENGHENTIKAN hanya bila
+       * diminta.
+       *
+       * `consecutiveLosses` hanya bersih setelah ada trade untung — dan selama
+       * entry diblokir, trade untung tidak mungkin terjadi. Di LIVE itu benar
+       * karena ada operator yang menilai ulang; di backtest tidak ada siapa
+       * pun, sehingga menghentikan di sini membuat setiap pengujian berakhir
+       * di deret rugi PERTAMA sementara laporannya tetap menyebut periode
+       * penuh.
+       */
+      const wouldKill = consecutiveLosses >= params.maxConsecutiveLosses;
+      if (wouldKill && killSwitchFiredAt === null) killSwitchFiredAt = now;
+      const killed = wouldKill && cfg.haltOnConsecutiveLosses === true;
 
       for (const [pair, candles] of candlesByPair) {
         if (openPositions.has(pair)) continue;
@@ -620,6 +685,7 @@ export class BacktestService {
       barsTested,
       periodStart: new Date(timeline[startIndex] * 1000).toISOString(),
       periodEnd: new Date(lastTime * 1000).toISOString(),
+      killSwitchFiredAt,
     };
   }
 
