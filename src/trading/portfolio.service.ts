@@ -26,9 +26,29 @@ export interface PortfolioState {
     unrealizedPnl: number;
     unrealizedPercent: number;
     rMultiple: number;
+    /**
+     * True bila harga pasar pair ini TIDAK terbaca dan angka di atas memakai
+     * harga entry sebagai pengganti.
+     *
+     * Tanpa penanda ini, posisi yang harganya gagal dibaca menampilkan P&L
+     * tepat 0,00 — tidak bisa dibedakan dari posisi yang memang datar.
+     * Operator akan membacanya sebagai "aman", padahal yang sebenarnya
+     * terjadi adalah "tidak diketahui".
+     */
+    priceStale: boolean;
   }>;
   /** True bila saldo tidak dapat dibaca dari exchange. */
   degraded: boolean;
+  /**
+   * Apa saja yang gagal dibaca, satu baris per kegagalan.
+   *
+   * `degraded` hanya menjawab "ada yang salah"; ini menjawab "yang mana" —
+   * dan tindakannya berbeda antara saldo yang tidak terbaca dan harga satu
+   * pair yang tidak terbaca.
+   */
+  degradedReasons: string[];
+  /** Kapan potret ini diambil. */
+  asOf: string;
 }
 
 /**
@@ -144,11 +164,13 @@ export class PortfolioService {
 
     let cashIdr = 0;
     let degraded = false;
+    const degradedReasons: string[] = [];
     try {
       cashIdr = await this.getCashIdr();
     } catch (err) {
       this.logger.error(`Gagal membaca saldo: ${err.message}`);
       degraded = true;
+      degradedReasons.push(`Saldo kas TIDAK terbaca: ${err.message}`);
     }
 
     const positions: PortfolioState['positions'] = [];
@@ -157,11 +179,17 @@ export class PortfolioService {
 
     for (const t of openTrades) {
       let currentPrice = t.entryPrice;
+      let priceStale = false;
       try {
         currentPrice = await this.getPrice(t.pair);
       } catch (err) {
         this.logger.warn(`Harga ${t.pair} tidak terbaca, memakai harga entry: ${err.message}`);
         degraded = true;
+        priceStale = true;
+        degradedReasons.push(
+          `Harga ${t.pair.toUpperCase()} TIDAK terbaca — P&L posisi #${t.id} memakai harga entry, ` +
+            'jadi angkanya 0 karena TIDAK DIKETAHUI, bukan karena datar',
+        );
       }
 
       const qty = t.remainingQuantity || t.quantity;
@@ -182,6 +210,7 @@ export class PortfolioService {
         unrealizedPercent: t.entryPrice > 0 ? ((currentPrice - t.entryPrice) / t.entryPrice) * 100 : 0,
         rMultiple:
           t.initialRiskPerUnit > 0 ? (currentPrice - t.entryPrice) / t.initialRiskPerUnit : 0,
+        priceStale,
       });
     }
 
@@ -201,6 +230,8 @@ export class PortfolioService {
       unrealizedPnl,
       positions,
       degraded,
+      degradedReasons,
+      asOf: new Date().toISOString(),
     };
   }
 

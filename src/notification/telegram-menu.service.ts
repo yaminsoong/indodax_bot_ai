@@ -292,6 +292,7 @@ export class TelegramMenuService implements OnApplicationBootstrap {
     let cash = 0;
     let positions = 0;
     let degraded = false;
+    let degradedReasons: string[] = [];
 
     try {
       const state = await this.portfolio.getState();
@@ -299,6 +300,7 @@ export class TelegramMenuService implements OnApplicationBootstrap {
       cash = state.cashIdr;
       positions = state.openPositions;
       degraded = state.degraded;
+      degradedReasons = state.degradedReasons ?? [];
     } catch (err) {
       degraded = true;
       this.logger.warn(`Ringkasan portofolio gagal dibaca: ${(err as Error).message}`);
@@ -317,7 +319,19 @@ export class TelegramMenuService implements OnApplicationBootstrap {
     ];
 
     if (!params.tradingEnabled) lines.push('⏸️ *Entry baru sedang dijeda.*', '');
-    if (degraded) lines.push('⚠️ _Sebagian data portofolio tidak terbaca._', '');
+    /**
+     * Sebab kegagalan disebut, bukan hanya fakta bahwa ada yang gagal.
+     *
+     * "Sebagian data tidak terbaca" tidak memberi tahu apa yang harus
+     * diperiksa. Yang paling berbahaya: posisi yang harganya gagal dibaca
+     * menampilkan P&L tepat 0,00 — tidak bisa dibedakan dari posisi datar,
+     * dan terbaca sebagai "aman" padahal artinya "tidak diketahui".
+     */
+    if (degradedReasons.length) {
+      lines.push('⚠️ *DATA TIDAK LENGKAP*', ...degradedReasons.map((r) => `  • ${r}`), '');
+    } else if (degraded) {
+      lines.push('⚠️ _Sebagian data portofolio tidak terbaca._', '');
+    }
 
     lines.push('Pilih menu di bawah:');
     return { text: lines.join('\n'), buttons: MAIN_GRID };
@@ -390,7 +404,9 @@ export class TelegramMenuService implements OnApplicationBootstrap {
           const naik = p.unrealizedPercent >= 0;
           lines.push(
             `${naik ? '🟢' : '🔴'} *#${p.tradeId} ${p.pair.toUpperCase()}* — ${idr(p.valueIdr)}`,
-            `    _${naik ? '+' : ''}${p.unrealizedPercent.toFixed(2)}% · ${idr(p.unrealizedPnl)} · ${p.rMultiple >= 0 ? '+' : ''}${p.rMultiple.toFixed(2)}R_`,
+            p.priceStale
+              ? `    ⚠️ _harga TIDAK terbaca — P&L belum diketahui, bukan 0_`
+              : `    _${naik ? '+' : ''}${p.unrealizedPercent.toFixed(2)}% · ${idr(p.unrealizedPnl)} · ${p.rMultiple >= 0 ? '+' : ''}${p.rMultiple.toFixed(2)}R_`,
           );
           buttons.push([
             { label: `❌ Tutup #${p.tradeId} ${p.pair.toUpperCase()}`, data: `tutup:${p.tradeId}` },
