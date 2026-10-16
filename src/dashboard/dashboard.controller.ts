@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TradingService } from '../trading/trading.service';
+import { ScoreAttributionService } from '../trading/score-attribution.service';
 import { PortfolioService } from '../trading/portfolio.service';
 import { ReconciliationService } from '../trading/reconciliation.service';
 import { RecoveryService } from '../trading/recovery.service';
@@ -50,6 +51,7 @@ export class DashboardController {
     private readonly analyst: AiAnalystService,
     private readonly affordability: AffordabilityService,
     private readonly opportunities: OpportunityWatcherService,
+    private readonly scoreAttribution: ScoreAttributionService,
     private readonly audit: AuditService,
   ) {}
 
@@ -256,6 +258,14 @@ export class DashboardController {
         };
       }),
     };
+  }
+
+  @Get('score-attribution')
+  @ApiOperation({
+    summary: 'Apakah skor Market Intelligence benar-benar meramalkan hasil?',
+  })
+  async getScoreAttribution() {
+    return this.scoreAttribution.attribute();
   }
 
   @Get('ai/status')

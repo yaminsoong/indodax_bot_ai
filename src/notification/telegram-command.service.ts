@@ -16,6 +16,7 @@ import { MarketIntelligenceConfigService } from '../market-intelligence/mi-confi
 import { HealthService } from '../monitoring/health.service';
 import { NewsService } from '../news/news.service';
 import { GroupSentimentService } from '../news/group-sentiment.service';
+import { ScoreAttributionService } from '../trading/score-attribution.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
 import { OpportunityWatcherService } from './opportunity-watcher.service';
@@ -67,6 +68,7 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     private readonly menuUi: TelegramMenuService,
     private readonly groupSentiment: GroupSentimentService,
     private readonly intelligenceConfig: MarketIntelligenceConfigService,
+    private readonly scoreAttribution: ScoreAttributionService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -115,6 +117,7 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     reg('health', 'Kesehatan komponen operasional', () => this.healthStatus());
     reg('recover', 'Pulihkan posisi berstatus FAILED', () => this.recoverFailed());
     reg('news', 'Berita + sentimen: /news atau /news btc', (a) => this.newsReport(a));
+    reg('skor', 'Apakah skor MI benar-benar meramalkan hasil?', () => this.scoreReport());
     reg('global', 'Pasar global dan Global Risk Score', () => this.globalReport());
     reg('menu', 'Menu bertombol — tidak perlu menghafal perintah', () => this.openMenu());
     reg('start', 'Buka menu utama', () => this.openMenu());
@@ -599,6 +602,75 @@ export class TelegramCommandService implements OnApplicationBootstrap {
    * operator tidak bisa menilai apakah sebuah judul layak dipercaya, dan
    * ringkasan sentimen berubah menjadi angka tanpa asal yang bisa diperiksa.
    */
+  /**
+   * Apakah skor MI benar-benar meramalkan hasil?
+   *
+   * Dilaporkan sebagai PERTANYAAN TERBUKA, bukan sebagai temuan. Pada
+   * walk-forward 16 Okt 2026 hubungannya tampak TERBALIK — bucket 80+
+   * menghasilkan nol kemenangan dari delapan trade — tetapi peluang kejadian
+   * itu pada win rate dasar ~37% adalah ~2,5%: mengusik, bukan bukti.
+   *
+   * Karena itu arah hubungan sengaja TIDAK ditampilkan sampai cukup trade per
+   * bucket. Menampilkan arah dari sampel kecil adalah cara tercepat mengubah
+   * ambang skor ke arah yang keliru.
+   */
+  private async scoreReport(): Promise<string> {
+    const a = await this.scoreAttribution.attribute();
+
+    const lines = [
+      '🎯 *SKOR vs HASIL*',
+      '',
+      `Mode: ${a.mode} · trade tertutup: ${a.totalClosed} · berskor: ${a.scored}`,
+      '',
+    ];
+
+    if (!a.byScore.length) {
+      lines.push(
+        '_Belum ada trade tertutup yang menyimpan skor MI._',
+        '',
+        '_Angka ini terkumpul sendiri setiap kali posisi ditutup._',
+      );
+      return lines.join('\n');
+    }
+
+    lines.push('```', '  bucket    trade   win   expectancy    galat', '');
+    for (const b of a.byScore) {
+      const siap = b.trades >= a.minTradesPerBucket ? '*' : ' ';
+      lines.push(
+        `${siap} ${b.label.padEnd(8)} ${String(b.trades).padStart(5)} ${b.winRate.toFixed(0).padStart(4)}%  ` +
+          `${(b.expectancyR >= 0 ? '+' : '') + b.expectancyR.toFixed(3)}R  ` +
+          `+-${b.expectancyStdErrorR.toFixed(3)}`,
+      );
+    }
+    lines.push('```', `_* = sudah mencapai ${a.minTradesPerBucket} trade_`, '');
+
+    if (a.conclusive && a.direction) {
+      const arti: Record<string, string> = {
+        SEARAH: 'skor tinggi memang menghasilkan lebih baik — ambang layak dinaikkan',
+        TERBALIK: 'skor tinggi menghasilkan LEBIH BURUK — lapisan MI bekerja melawan Anda',
+        'TIDAK JELAS': 'skor tidak membedakan hasil — lapisan MI tidak menambah apa pun',
+      };
+      lines.push(`*Arah hubungan: ${a.direction}*`, `_${arti[a.direction]}_`, '');
+    } else {
+      lines.push('*Arah hubungan: BELUM BISA DISIMPULKAN*', '');
+    }
+
+    lines.push(`_${a.caveat}_`);
+
+    if (a.byRegime.length) {
+      lines.push('', '*Per kondisi pasar:*', '```');
+      for (const r of a.byRegime) {
+        lines.push(
+          `  ${r.label.padEnd(14)} ${String(r.trades).padStart(4)} trade  ` +
+            `${(r.expectancyR >= 0 ? '+' : '') + r.expectancyR.toFixed(3)}R`,
+        );
+      }
+      lines.push('```');
+    }
+
+    return lines.join('\n');
+  }
+
   private async newsReport(args: string[]): Promise<string> {
     const coinArg = (args[0] ?? '').toLowerCase().replace(/idr$/, '');
     const forCoin = /^[a-z0-9]{2,12}$/.test(coinArg);
