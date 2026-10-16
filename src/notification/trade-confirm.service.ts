@@ -283,6 +283,33 @@ export class TradeConfirmService implements OnApplicationBootstrap {
       `_Bila stop kena, yang hilang ${idr(decision.riskAmountIdr)} — bukan ${idr(decision.positionSize)}._`,
     );
 
+    /**
+     * Cara kerja stop loss dinyatakan TERANG-TERANGAN.
+     *
+     * Indodax TIDAK menyediakan pembuatan order stop lewat API — docs resmi
+     * hanya mendokumentasikan `limit` dan `market` pada method `trade`; tipe
+     * `stoplimit` hanya muncul di `cancelOrder` dan `openOrders`, jadi hanya
+     * bisa dibuat dari web UI mereka. Karena itu stop di bot ini WAJIB
+     * dipantau sendiri: harga diperiksa tiap menit, lalu order jual pasar
+     * dikirim ketika stop tertembus.
+     *
+     * Akibatnya harus diketahui sebelum menekan CONFIRM, bukan setelah:
+     * selama bot mati atau koneksi terputus, posisi ini TIDAK TERLINDUNGI.
+     * Kata "otomatis" tanpa penjelasan ini membuat operator percaya stopnya
+     * dipegang bursa.
+     */
+    out.push(
+      '',
+      '*— Cara stop loss bekerja —*',
+      '⚠️ Stop *DIPANTAU BOT*, bukan dipasang di Indodax.',
+      '  Indodax tidak menyediakannya lewat API.',
+      '  Harga diperiksa tiap 1 menit; bila stop tertembus,',
+      '  bot mengirim order jual pasar.',
+      '',
+      '  Artinya: *saat bot mati, posisi ini tidak terlindungi.*',
+      '  Gerakan tajam dalam 1 menit juga bisa terlewat.',
+    );
+
     return out;
   }
 

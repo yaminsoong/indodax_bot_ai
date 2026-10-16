@@ -17,6 +17,7 @@ import { HealthService } from '../monitoring/health.service';
 import { NewsService } from '../news/news.service';
 import { GroupSentimentService } from '../news/group-sentiment.service';
 import { ScoreAttributionService } from '../trading/score-attribution.service';
+import { LevelEditorService } from '../trading/level-editor.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
 import { OpportunityWatcherService } from './opportunity-watcher.service';
@@ -69,6 +70,7 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     private readonly groupSentiment: GroupSentimentService,
     private readonly intelligenceConfig: MarketIntelligenceConfigService,
     private readonly scoreAttribution: ScoreAttributionService,
+    private readonly levelEditor: LevelEditorService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -118,6 +120,8 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     reg('recover', 'Pulihkan posisi berstatus FAILED', () => this.recoverFailed());
     reg('news', 'Berita + sentimen: /news atau /news btc', (a) => this.newsReport(a));
     reg('skor', 'Apakah skor MI benar-benar meramalkan hasil?', () => this.scoreReport());
+    reg('sl', 'Ubah stop loss: /sl <id> <harga>', (a) => this.editLevel('sl', a));
+    reg('tp', 'Ubah take profit: /tp <id> <harga>', (a) => this.editLevel('tp', a));
     reg('global', 'Pasar global dan Global Risk Score', () => this.globalReport());
     reg('menu', 'Menu bertombol — tidak perlu menghafal perintah', () => this.openMenu());
     reg('start', 'Buka menu utama', () => this.openMenu());
@@ -614,6 +618,42 @@ export class TelegramCommandService implements OnApplicationBootstrap {
    * bucket. Menampilkan arah dari sampel kecil adalah cara tercepat mengubah
    * ambang skor ke arah yang keliru.
    */
+  /**
+   * Ubah stop loss atau take profit posisi terbuka.
+   *
+   * Dibuat sebagai perintah berargumen, BUKAN tombol bertingkat. Harga adalah
+   * angka bebas; menebaknya lewat tombol berarti menyediakan pilihan yang
+   * sudah ditentukan, dan operator yang ingin angka di antaranya tidak
+   * punya jalan.
+   */
+  private async editLevel(jenis: 'sl' | 'tp', args: string[]): Promise<string> {
+    const nama = jenis === 'sl' ? 'stop loss' : 'take profit';
+
+    if (args.length < 2) {
+      return [
+        `Pakai: /${jenis} <id> <harga>`,
+        '',
+        `Contoh: /${jenis} 3 1450`,
+        '',
+        '_Lihat nomor posisi di menu Portfolio._',
+      ].join('\n');
+    }
+
+    const id = Number(args[0]);
+    // Titik dan koma sama-sama diterima: operator Indonesia menulis keduanya.
+    const harga = Number(String(args[1]).replace(/[^0-9.,]/g, '').replace(',', '.'));
+
+    if (!Number.isInteger(id) || id <= 0) return `Nomor posisi tidak sah: ${args[0]}`;
+    if (!(harga > 0)) return `Harga ${nama} tidak sah: ${args[1]}`;
+
+    const r =
+      jenis === 'sl'
+        ? await this.levelEditor.setStopLoss(id, harga)
+        : await this.levelEditor.setTakeProfit(id, harga);
+
+    return r.ok ? r.message : `❌ ${r.message}`;
+  }
+
   private async scoreReport(): Promise<string> {
     const a = await this.scoreAttribution.attribute();
 

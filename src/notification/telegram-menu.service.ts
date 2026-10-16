@@ -412,6 +412,18 @@ export class TelegramMenuService implements OnApplicationBootstrap {
             { label: `❌ Tutup #${p.tradeId} ${p.pair.toUpperCase()}`, data: `tutup:${p.tradeId}` },
           ]);
         }
+        /**
+         * Pengingat cara kerja stop, ditampilkan HANYA bila ada posisi.
+         *
+         * Di panel kosong ia hanya kebisingan; di panel berisi ia menyangkut
+         * uang yang sedang berisiko sekarang.
+         */
+        lines.push(
+          '',
+          '⚠️ _Stop loss DIPANTAU BOT, bukan dipasang di Indodax_',
+          '_(tidak tersedia lewat API mereka). Diperiksa tiap 1 menit —_',
+          '_saat bot mati, posisi di atas tidak terlindungi._',
+        );
       } else {
         lines.push('_Tidak ada posisi terbuka._');
       }

@@ -13,6 +13,7 @@ import { AffordabilityService } from './affordability.service';
 import { TradingService } from './trading.service';
 import { PortfolioService } from './portfolio.service';
 import { ScoreAttributionService } from './score-attribution.service';
+import { LevelEditorService } from './level-editor.service';
 import { ExecutionService } from './execution.service';
 import { ReconciliationService } from './reconciliation.service';
 import { RecoveryService } from './recovery.service';
@@ -26,7 +27,7 @@ import { RecoveryService } from './recovery.service';
     NotificationModule,
     MarketIntelligenceModule,
   ],
-  providers: [ScoreAttributionService, 
+  providers: [LevelEditorService, ScoreAttributionService, 
     AffordabilityService,
     PortfolioService,
     RiskService,
@@ -35,7 +36,7 @@ import { RecoveryService } from './recovery.service';
     RecoveryService,
     TradingService,
   ],
-  exports: [ScoreAttributionService, 
+  exports: [LevelEditorService, ScoreAttributionService, 
     AffordabilityService,TradingService, RiskService, PortfolioService, ReconciliationService, RecoveryService],
 })
 export class TradingModule {}
