@@ -235,13 +235,50 @@ export class PortfolioService {
     };
   }
 
+  /**
+   * Puncak ekuitas, HANYA dari snapshot yang basisnya sebanding.
+   *
+   * Pada mode SIMULASI, modal awal adalah setelan yang bisa diubah. Mengubahnya
+   * TIDAK membuat ekuitas turun — ia memulai percobaan yang berbeda. Tetapi
+   * puncak lama tetap tersimpan, dan drawdown lalu dihitung dari basis yang
+   * sudah tidak berlaku.
+   *
+   * Terukur pada 2026-10-16: `SIMULATION_CAPITAL_IDR` diubah 10.000.000 ->
+   * 1.000.000, puncak lama 9 September masih 10.000.000, sehingga
+   * (10.000.000 - 1.000.000) / 10.000.000 = 90,00% — tepat angka yang membuat
+   * kill switch menyala 55 kali dalam 24 jam dan memblokir SELURUH entry,
+   * termasuk 24 sinyal BUY yang sudah lolos semua filter. Simulasi tampak
+   * berjalan padahal sama sekali tidak bisa membuka posisi.
+   *
+   * Bentuk bug yang sama pernah terjadi di LIVE: dana tertahan dibaca sebagai
+   * drawdown 65%. Dua-duanya berasal dari puncak yang dibandingkan terhadap
+   * basis yang berbeda.
+   *
+   * Karena itu pada SIMULASI puncak dibatasi tidak melebihi modal awal yang
+   * BERLAKU SEKARANG. Pada LIVE tidak ada pembatasan: di sana puncak memang
+   * riwayat nyata dari uang nyata, dan membatasinya akan menyembunyikan
+   * drawdown yang sungguh terjadi.
+   */
   private async getPeakEquity(): Promise<number> {
     const row = await this.equityRepo
       .createQueryBuilder('e')
       .select('MAX(e.equityIdr)', 'peak')
       .where('e.mode = :mode', { mode: this.config.mode })
       .getRawOne();
-    return Number(row?.peak) || 0;
+
+    const peak = Number(row?.peak) || 0;
+    if (this.config.isLive) return peak;
+
+    const modal = this.config.simulationCapitalIdr;
+    if (peak > modal) {
+      this.logger.warn(
+        `Puncak ekuitas simulasi ${Math.round(peak)} melebihi modal awal ${modal} — ` +
+          'snapshot itu berasal dari modal simulasi yang berbeda dan DIABAIKAN. ' +
+          'Tanpa ini, mengubah SIMULATION_CAPITAL_IDR akan tampak sebagai drawdown.',
+      );
+      return modal;
+    }
+    return peak;
   }
 
   /** Simpan snapshot ekuitas — menyusun equity curve dan riwayat drawdown. */
