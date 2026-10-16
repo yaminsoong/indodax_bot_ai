@@ -401,9 +401,26 @@ export class IndodaxService {
     return crypto.createHmac('sha512', secret).update(postData).digest('hex');
   }
 
-  /** Nonce monotonik — tidak pernah mengulang nilai walau dipanggil beruntun. */
+  /**
+   * Nonce monotonik, DIKOREKSI terhadap jam server Indodax.
+   *
+   * Nonce di TAPI lama dipakai sekaligus sebagai `timestamp`, sehingga jam
+   * mesin yang meleset membuat seluruh panggilan privat ditolak dengan
+   * "Invalid timestamp". Diukur 2026-10-14: jam mesin ini 183 DETIK
+   * tertinggal dari server Indodax, dan 20 galat `Invalid timestamp` muncul
+   * di log hari itu.
+   *
+   * Klien v2 sudah mengoreksinya lewat `clockOffsetMs`; jalur lama TIDAK,
+   * dan memakai `Date.now()` mentah. Offset yang sama dipakai di sini supaya
+   * kedua protokol tahan terhadap jam yang meleset — bot yang memegang uang
+   * tidak boleh bergantung pada kerapian jam mesin yang menjalankannya.
+   *
+   * `getClockOffsetMs()` bersifat sinkron dan mengembalikan hasil sinkronisasi
+   * terakhir; nol bila belum pernah sinkron, yang berarti perilakunya sama
+   * seperti sebelumnya.
+   */
   private nextNonce(): string {
-    const now = Date.now();
+    const now = Date.now() + this.v2.getClockOffsetMs();
     this.lastNonce = now > this.lastNonce ? now : this.lastNonce + 1;
     return String(this.lastNonce);
   }
@@ -434,6 +451,16 @@ export class IndodaxService {
     return this.privateMutex.runExclusive(async () => {
       const attempt = async () => {
         await this.privateLimiter.acquire();
+        /**
+         * Pastikan offset jam sudah terukur sebelum nonce dibentuk.
+         *
+         * Di-cache 15 menit di dalam `syncClock`, jadi ini bukan permintaan
+         * jaringan tambahan pada panggilan biasa. Kegagalannya diabaikan
+         * dengan sengaja: offset nol hanya berarti kembali ke perilaku lama,
+         * sedangkan melempar di sini akan mematikan panggilan yang mungkin
+         * tetap berhasil.
+         */
+        await this.v2.syncClock().catch(() => undefined);
         const nonce = this.nextNonce();
         const postData = new URLSearchParams({
           method,
@@ -455,6 +482,20 @@ export class IndodaxService {
         if (res.data?.success !== 1) {
           const err: any = new Error(res.data?.error || `Indodax API error (${method})`);
           err.indodaxCode = res.data?.error_code;
+
+          /**
+           * Timestamp ditolak: paksa sinkronisasi ulang sebelum percobaan
+           * berikutnya, seperti yang sudah dilakukan klien v2.
+           *
+           * Tanpa ini, offset yang di-cache 15 menit membuat SETIAP panggilan
+           * privat dalam jendela itu gagal dengan sebab yang sama — persis
+           * pola 20 galat beruntun pada 14 Okt.
+           */
+          if (/invalid timestamp/i.test(String(err.message))) {
+            this.logger.warn('Timestamp ditolak TAPI lama — menyinkronkan ulang jam');
+            await this.v2.syncClock(true).catch(() => undefined);
+            err.retryable = true;
+          }
           throw err;
         }
         return res.data.return;
@@ -463,7 +504,9 @@ export class IndodaxService {
       return retries > 0
         ? withRetry(attempt, {
             retries,
-            retryable: isTransientError,
+            // Galat timestamp layak diulang karena jam baru saja disinkronkan
+            // ulang tepat sebelum galat itu dilempar.
+            retryable: (e) => isTransientError(e) || (e as any)?.retryable === true,
             onRetry: (a, e) => this.logger.warn(`Retry ${method} #${a}: ${e.message}`),
           })
         : attempt();
