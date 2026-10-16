@@ -806,11 +806,33 @@ export class TelegramCommandService implements OnApplicationBootstrap {
         '_Lihat pesan di bawah, lengkap dengan tombol._',
       );
     } else {
+      /**
+       * Corong ditampilkan utuh, bukan satu angka.
+       *
+       * "Lolos ambang skor: 0 pair" dengan ambang 70 TERBACA SALAH ketika ada
+       * pair berskor 70 di menu lain — dan itu memang terjadi pada STRKIDR.
+       * Angka lamanya dihitung setelah penyaring keputusan, sehingga labelnya
+       * menjanjikan hal yang tidak diukurnya.
+       */
+      const f = r.funnel;
       lines.push(
         `Tidak ada yang layak ditawarkan.`,
         '',
-        `Lolos ambang skor: ${r.considered} pair`,
+        '*Corong penyaring:*',
+        `  ${f.totalHits} kondisi terpantau`,
+        `  ${f.passedScore} lolos skor >= ${f.minScore}`,
+        `  ${f.passedDecision} lolos keputusan (bukan NO_TRADE)`,
+        `  *${f.passedBoth} lolos keduanya* -> yang ditawarkan`,
       );
+
+      if (f.passedScore > 0 && f.passedDecision === 0) {
+        lines.push(
+          '',
+          `_${f.passedScore} pair skornya cukup, tetapi SEMUANYA punya aturan_`,
+          `_yang menolak — bukan karena skornya kurang. Pakai /market_`,
+          `_untuk melihat skor, dan /analyze <pair> untuk sebab penolakannya._`,
+        );
+      }
       if (r.skipped.length) {
         lines.push('', '*Dilewati:*', ...r.skipped.slice(0, 8).map((s) => `  • ${s}`));
       }
@@ -850,7 +872,10 @@ export class TelegramCommandService implements OnApplicationBootstrap {
       '━━━━━━━━━━━━━━━━━━',
       '*Dinilai dengan apa*',
       '',
-      `*Strategi:* ${this.config.str('STRATEGY', 'bawaan')}`,
+      // Dibaca dari registry, BUKAN dari env: kunci 'STRATEGY' tidak pernah
+      // ada (yang benar ACTIVE_STRATEGY), sehingga baris ini dulu selalu
+      // menampilkan "bawaan" dan tidak pernah menyebut strategi sebenarnya.
+      `*Strategi:* ${this.strategies.active().name}`,
       `  EMA 5/13/21 + RSI + ADX, bar ${p.candleTimeframe} menit`,
       `  Konfirmasi tren HTF ${p.htfTimeframe} menit: ${p.requireHtfTrend ? 'wajib' : 'tidak'}`,
       '',

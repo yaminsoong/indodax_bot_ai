@@ -70,7 +70,31 @@ export class OpportunityWatcherService {
   }
 
   /** Dipakai juga oleh perintah Telegram untuk memeriksa sekarang. */
-  async findAndOffer(): Promise<{ offered: string[]; considered: number; skipped: string[] }> {
+  async findAndOffer(): Promise<{
+    offered: string[];
+    considered: number;
+    skipped: string[];
+    /**
+     * Rincian corong penyaring, dilaporkan terpisah karena TINDAKANNYA beda.
+     *
+     * Satu angka "considered" tidak bisa menjelaskan apa pun. Pada 16 Okt 2026
+     * operator melihat satu menu menampilkan STRKIDR berskor 70 sementara
+     * /peluang berkata "Lolos ambang skor: 0 pair" dengan ambang 70 — dua
+     * pernyataan yang tidak mungkin sama-sama benar. Sebabnya: angka itu
+     * dihitung SETELAH penyaring keputusan, padahal labelnya menyebut skor.
+     *
+     *   lolos SKOR saja     -> setupnya kuat, tetapi ada aturan yang menolak
+     *   lolos KEPUTUSAN saja-> tidak ada blocker, tetapi kualitasnya kurang
+     *   lolos KEDUANYA      -> baru inilah yang ditawarkan
+     */
+    funnel: {
+      totalHits: number;
+      passedScore: number;
+      passedDecision: number;
+      passedBoth: number;
+      minScore: number;
+    };
+  }> {
     const params = this.config.params();
     const skipped: string[] = [];
 
@@ -82,6 +106,13 @@ export class OpportunityWatcherService {
         offered: [],
         considered: 0,
         skipped: [`kill switch aktif: ${kill.reasons.join('; ')}`],
+        funnel: {
+          totalHits: 0,
+          passedScore: 0,
+          passedDecision: 0,
+          passedBoth: 0,
+          minScore: params.opportunityMinScore,
+        },
       };
     }
 
@@ -123,6 +154,16 @@ export class OpportunityWatcherService {
     const candidates = tradeable
       .filter((h) => h.score >= params.opportunityMinScore)
       .sort((a, b) => b.score - a.score);
+
+    // Dihitung dari kumpulan hit YANG SAMA supaya tiap angka bisa
+    // dipertanggungjawabkan terhadap yang lain.
+    const funnel = {
+      totalHits: result.hits.length,
+      passedScore: result.hits.filter((h) => h.score >= params.opportunityMinScore).length,
+      passedDecision: tradeable.length,
+      passedBoth: candidates.length,
+      minScore: params.opportunityMinScore,
+    };
 
     if (!candidates.length) {
       // Dibedakan dengan jelas: tidak ada setup sama sekali adalah keadaan
@@ -169,7 +210,7 @@ export class OpportunityWatcherService {
       this.logger.log(`Peluang ditawarkan: ${pair.toUpperCase()} skor ${hit.score}`);
     }
 
-    return { offered, considered: candidates.length, skipped };
+    return { offered, considered: candidates.length, skipped, funnel };
   }
 
   /**

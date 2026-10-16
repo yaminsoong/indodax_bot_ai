@@ -76,9 +76,11 @@ describe('Konsistensi konfirmasi order', () => {
           minStopPercent: 0.8,
           riskPerTradePercent: 1.5,
         }),
-        str: (_k: string, _d: string) => 'EMA_SCALPING_V2',
         mode: 'LIVE',
       },
+      // Nama strategi kini dibaca dari registry, bukan dari env: kunci
+      // 'STRATEGY' tidak pernah ada, yang benar ACTIVE_STRATEGY.
+      strategies: { active: () => ({ name: 'EMA_SCALPING_V2' }) },
       intelligence: {},
       indodax,
       pending: new Map(),

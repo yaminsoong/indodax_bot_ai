@@ -7,6 +7,7 @@ import { TradingService } from '../trading/trading.service';
 import { RiskService } from '../trading/risk.service';
 import { BotConfigService } from '../config/bot-config.service';
 import { MarketIntelligenceService } from '../market-intelligence/market-intelligence.service';
+import { StrategyRegistry } from '../strategy/strategy.registry';
 import { IndodaxService } from '../indodax/indodax.service';
 import { fmtPrice, idr } from '../common/num';
 
@@ -70,6 +71,7 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     private readonly config: BotConfigService,
     private readonly intelligence: MarketIntelligenceService,
     private readonly indodax: IndodaxService,
+    private readonly strategies: StrategyRegistry,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -231,7 +233,8 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     const stopGap = price - decision.stopLossPrice;
     const stopPercent = price > 0 ? (stopGap / price) * 100 : 0;
 
-    out.push('', '*— Strategi & penilaian —*', `Strategi: ${this.config.str('STRATEGY', 'bawaan')}`);
+        // Nama strategi dari registry; kunci env 'STRATEGY' tidak pernah ada.
+    out.push('', '*— Strategi & penilaian —*', `Strategi: ${this.strategies.active().name}`);
 
     if (report?.confluence) {
       const c = report.confluence;
