@@ -12,11 +12,17 @@ import { StrategyRegistry } from '../strategy/strategy.registry';
 import { BotConfigService } from '../config/bot-config.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { MarketIntelligenceService } from '../market-intelligence/market-intelligence.service';
+import { MarketIntelligenceConfigService } from '../market-intelligence/mi-config.service';
 import { HealthService } from '../monitoring/health.service';
 import { NewsService } from '../news/news.service';
+import { GroupSentimentService } from '../news/group-sentiment.service';
+import { ScoreAttributionService } from '../trading/score-attribution.service';
+import { LevelEditorService } from '../trading/level-editor.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
 import { OpportunityWatcherService } from './opportunity-watcher.service';
+import { AffordabilityService } from '../trading/affordability.service';
+import { TelegramMenuService } from './telegram-menu.service';
 import { RecoveryService } from '../trading/recovery.service';
 import { fmtPrice, idr } from '../common/num';
 
@@ -59,10 +65,34 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     private readonly globalMarket: GlobalMarketService,
     private readonly analyst: AiAnalystService,
     private readonly opportunities: OpportunityWatcherService,
+    private readonly affordability: AffordabilityService,
+    private readonly menuUi: TelegramMenuService,
+    private readonly groupSentiment: GroupSentimentService,
+    private readonly intelligenceConfig: MarketIntelligenceConfigService,
+    private readonly scoreAttribution: ScoreAttributionService,
+    private readonly levelEditor: LevelEditorService,
   ) {}
 
   onApplicationBootstrap(): void {
     if (!this.notification.isEnabled()) return;
+
+    /**
+     * Pasang pengamat grup.
+     *
+     * Didaftarkan dari sini, bukan dari modul berita, karena hanya modul ini
+     * yang memegang NotificationService DAN lapisan berita sekaligus —
+     * memberi NotificationService ketergantungan ke modul berita akan
+     * membuat lingkaran.
+     */
+    if (this.groupSentiment.isEnabled()) {
+      this.notification.registerGroupObserver((chatId, title, text) =>
+        this.groupSentiment.observe(chatId, title, text),
+      );
+      this.logger.log(
+        `Mengamati ${this.groupSentiment.watchedGroups().length} grup Telegram ` +
+          '(hanya membaca; grup tidak bisa menjalankan perintah)',
+      );
+    }
 
     const reg = (name: string, help: string, fn: (args: string[]) => Promise<string>) =>
       this.notification.registerCommand(name, help, (args) => fn(args));
@@ -89,10 +119,15 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     reg('health', 'Kesehatan komponen operasional', () => this.healthStatus());
     reg('recover', 'Pulihkan posisi berstatus FAILED', () => this.recoverFailed());
     reg('news', 'Berita + sentimen: /news atau /news btc', (a) => this.newsReport(a));
+    reg('skor', 'Apakah skor MI benar-benar meramalkan hasil?', () => this.scoreReport());
+    reg('sl', 'Ubah stop loss: /sl <id> <harga>', (a) => this.editLevel('sl', a));
+    reg('tp', 'Ubah take profit: /tp <id> <harga>', (a) => this.editLevel('tp', a));
     reg('global', 'Pasar global dan Global Risk Score', () => this.globalReport());
-    reg('menu', 'Daftar menu utama', () => this.menu());
+    reg('menu', 'Menu bertombol — tidak perlu menghafal perintah', () => this.openMenu());
+    reg('start', 'Buka menu utama', () => this.openMenu());
     reg('ask', 'Tanya bebas ke analis: /ask kenapa BTC turun?', (a) => this.askAnalyst(a));
     reg('peluang', 'Cari peluang sekarang dan kirim tawaran bertombol', () => this.findOpportunities());
+    reg('dashboard', 'Apa yang bisa dibeli dengan saldo sekarang + kartu bertombol', () => this.dashboard());
 
     this.logger.log('Perintah Telegram terdaftar');
   }
@@ -571,6 +606,111 @@ export class TelegramCommandService implements OnApplicationBootstrap {
    * operator tidak bisa menilai apakah sebuah judul layak dipercaya, dan
    * ringkasan sentimen berubah menjadi angka tanpa asal yang bisa diperiksa.
    */
+  /**
+   * Apakah skor MI benar-benar meramalkan hasil?
+   *
+   * Dilaporkan sebagai PERTANYAAN TERBUKA, bukan sebagai temuan. Pada
+   * walk-forward 16 Okt 2026 hubungannya tampak TERBALIK — bucket 80+
+   * menghasilkan nol kemenangan dari delapan trade — tetapi peluang kejadian
+   * itu pada win rate dasar ~37% adalah ~2,5%: mengusik, bukan bukti.
+   *
+   * Karena itu arah hubungan sengaja TIDAK ditampilkan sampai cukup trade per
+   * bucket. Menampilkan arah dari sampel kecil adalah cara tercepat mengubah
+   * ambang skor ke arah yang keliru.
+   */
+  /**
+   * Ubah stop loss atau take profit posisi terbuka.
+   *
+   * Dibuat sebagai perintah berargumen, BUKAN tombol bertingkat. Harga adalah
+   * angka bebas; menebaknya lewat tombol berarti menyediakan pilihan yang
+   * sudah ditentukan, dan operator yang ingin angka di antaranya tidak
+   * punya jalan.
+   */
+  private async editLevel(jenis: 'sl' | 'tp', args: string[]): Promise<string> {
+    const nama = jenis === 'sl' ? 'stop loss' : 'take profit';
+
+    if (args.length < 2) {
+      return [
+        `Pakai: /${jenis} <id> <harga>`,
+        '',
+        `Contoh: /${jenis} 3 1450`,
+        '',
+        '_Lihat nomor posisi di menu Portfolio._',
+      ].join('\n');
+    }
+
+    const id = Number(args[0]);
+    // Titik dan koma sama-sama diterima: operator Indonesia menulis keduanya.
+    const harga = Number(String(args[1]).replace(/[^0-9.,]/g, '').replace(',', '.'));
+
+    if (!Number.isInteger(id) || id <= 0) return `Nomor posisi tidak sah: ${args[0]}`;
+    if (!(harga > 0)) return `Harga ${nama} tidak sah: ${args[1]}`;
+
+    const r =
+      jenis === 'sl'
+        ? await this.levelEditor.setStopLoss(id, harga)
+        : await this.levelEditor.setTakeProfit(id, harga);
+
+    return r.ok ? r.message : `❌ ${r.message}`;
+  }
+
+  private async scoreReport(): Promise<string> {
+    const a = await this.scoreAttribution.attribute();
+
+    const lines = [
+      '🎯 *SKOR vs HASIL*',
+      '',
+      `Mode: ${a.mode} · trade tertutup: ${a.totalClosed} · berskor: ${a.scored}`,
+      '',
+    ];
+
+    if (!a.byScore.length) {
+      lines.push(
+        '_Belum ada trade tertutup yang menyimpan skor MI._',
+        '',
+        '_Angka ini terkumpul sendiri setiap kali posisi ditutup._',
+      );
+      return lines.join('\n');
+    }
+
+    lines.push('```', '  bucket    trade   win   expectancy    galat', '');
+    for (const b of a.byScore) {
+      const siap = b.trades >= a.minTradesPerBucket ? '*' : ' ';
+      lines.push(
+        `${siap} ${b.label.padEnd(8)} ${String(b.trades).padStart(5)} ${b.winRate.toFixed(0).padStart(4)}%  ` +
+          `${(b.expectancyR >= 0 ? '+' : '') + b.expectancyR.toFixed(3)}R  ` +
+          `+-${b.expectancyStdErrorR.toFixed(3)}`,
+      );
+    }
+    lines.push('```', `_* = sudah mencapai ${a.minTradesPerBucket} trade_`, '');
+
+    if (a.conclusive && a.direction) {
+      const arti: Record<string, string> = {
+        SEARAH: 'skor tinggi memang menghasilkan lebih baik — ambang layak dinaikkan',
+        TERBALIK: 'skor tinggi menghasilkan LEBIH BURUK — lapisan MI bekerja melawan Anda',
+        'TIDAK JELAS': 'skor tidak membedakan hasil — lapisan MI tidak menambah apa pun',
+      };
+      lines.push(`*Arah hubungan: ${a.direction}*`, `_${arti[a.direction]}_`, '');
+    } else {
+      lines.push('*Arah hubungan: BELUM BISA DISIMPULKAN*', '');
+    }
+
+    lines.push(`_${a.caveat}_`);
+
+    if (a.byRegime.length) {
+      lines.push('', '*Per kondisi pasar:*', '```');
+      for (const r of a.byRegime) {
+        lines.push(
+          `  ${r.label.padEnd(14)} ${String(r.trades).padStart(4)} trade  ` +
+            `${(r.expectancyR >= 0 ? '+' : '') + r.expectancyR.toFixed(3)}R`,
+        );
+      }
+      lines.push('```');
+    }
+
+    return lines.join('\n');
+  }
+
   private async newsReport(args: string[]): Promise<string> {
     const coinArg = (args[0] ?? '').toLowerCase().replace(/idr$/, '');
     const forCoin = /^[a-z0-9]{2,12}$/.test(coinArg);
@@ -746,42 +886,16 @@ export class TelegramCommandService implements OnApplicationBootstrap {
     return `${header}\n\n${answer.text}${footer}`;
   }
 
-  /** Menu utama — titik masuk bagi operator yang tidak menghafal perintah. */
-  private async menu(): Promise<string> {
-    return [
-      '📋 *MENU*',
-      '',
-      '🧠 *Tanya bebas*',
-      '  `/ask kenapa BTC turun?`',
-      '',
-      '🔎 *Cari peluang*',
-      '  `/market` — peringkat semua pair likuid',
-      '  `/overview` — ringkasan pair yang ditradingkan',
-      '  `/scan btcidr` — periksa satu pair',
-      '  `/chart btcidr` — grafik + support/resistance',
-      '  `/analyze btcidr` — analisis lengkap',
-      '',
-      '📰 *Berita & dunia*',
-      '  `/news` — sentimen berita pasar',
-      '  `/news btc` — berita satu koin',
-      '  `/global` — pasar saham, dolar, emas, minyak',
-      '',
-      '💼 *Posisi & hasil*',
-      '  `/status` `/positions` `/pnl` `/today`',
-      '  `/buy btcidr` — usul order (minta konfirmasi dulu)',
-      '  `/close 12` — tutup posisi nomor 12',
-      '',
-      '🛠 *Operasional*',
-      '  `/risk` — sisa jatah risiko hari ini',
-      '  `/blockers` — kenapa bot tidak buka posisi',
-      '  `/health` — kondisi komponen bot',
-      '  `/pause` `/resume` `/reconcile` `/recover`',
-      '',
-      '⚙️ *Pengaturan*',
-      '  `/config` `/set risk 1.5` `/strategy`',
-      '',
-      `Mode sekarang: *${this.config.mode}*`,
-    ].join('\n');
+  /**
+   * Buka menu bertombol.
+   *
+   * Balasannya kosong karena menunya dikirim sebagai pesan tersendiri yang
+   * membawa papan tombol — mengirim teks tambahan hanya akan menggandakan
+   * isinya tepat di atas menu.
+   */
+  private async openMenu(): Promise<string> {
+    await this.menuUi.send();
+    return '';
   }
 
   /**
@@ -804,11 +918,33 @@ export class TelegramCommandService implements OnApplicationBootstrap {
         '_Lihat pesan di bawah, lengkap dengan tombol._',
       );
     } else {
+      /**
+       * Corong ditampilkan utuh, bukan satu angka.
+       *
+       * "Lolos ambang skor: 0 pair" dengan ambang 70 TERBACA SALAH ketika ada
+       * pair berskor 70 di menu lain — dan itu memang terjadi pada STRKIDR.
+       * Angka lamanya dihitung setelah penyaring keputusan, sehingga labelnya
+       * menjanjikan hal yang tidak diukurnya.
+       */
+      const f = r.funnel;
       lines.push(
         `Tidak ada yang layak ditawarkan.`,
         '',
-        `Lolos ambang skor: ${r.considered} pair`,
+        '*Corong penyaring:*',
+        `  ${f.totalHits} kondisi terpantau`,
+        `  ${f.passedScore} lolos skor >= ${f.minScore}`,
+        `  ${f.passedDecision} lolos keputusan (bukan NO_TRADE)`,
+        `  *${f.passedBoth} lolos keduanya* -> yang ditawarkan`,
       );
+
+      if (f.passedScore > 0 && f.passedDecision === 0) {
+        lines.push(
+          '',
+          `_${f.passedScore} pair skornya cukup, tetapi SEMUANYA punya aturan_`,
+          `_yang menolak — bukan karena skornya kurang. Pakai /market_`,
+          `_untuk melihat skor, dan /analyze <pair> untuk sebab penolakannya._`,
+        );
+      }
       if (r.skipped.length) {
         lines.push('', '*Dilewati:*', ...r.skipped.slice(0, 8).map((s) => `  • ${s}`));
       }
@@ -822,7 +958,210 @@ export class TelegramCommandService implements OnApplicationBootstrap {
       }
     }
 
+    lines.push(...this.setupSummary());
+
     return lines.join('\n');
+  }
+
+  /**
+   * Keterangan tetap: strategi apa, risiko berapa, analisis apa.
+   *
+   * Ditampilkan pada SETIAP pemeriksaan peluang, termasuk yang kosong. Ketika
+   * hasilnya kosong, pertanyaan pertama operator selalu "kosong menurut
+   * ukuran siapa?" - dan tanpa jawabannya, hasil kosong terbaca seperti bot
+   * yang menganggur, bukan bot yang menolak.
+   *
+   * Angkanya dibaca dari konfigurasi yang SAMA dengan yang dipakai mengambil
+   * keputusan, bukan ditulis ulang di sini. Keterangan yang bisa menyimpang
+   * dari perilaku sebenarnya lebih buruk daripada tidak ada keterangan.
+   */
+  private setupSummary(): string[] {
+    const p = this.config.params();
+    const mi = this.intelligenceConfig.params();
+
+    return [
+      '',
+      '━━━━━━━━━━━━━━━━━━',
+      '*Dinilai dengan apa*',
+      '',
+      // Dibaca dari registry, BUKAN dari env: kunci 'STRATEGY' tidak pernah
+      // ada (yang benar ACTIVE_STRATEGY), sehingga baris ini dulu selalu
+      // menampilkan "bawaan" dan tidak pernah menyebut strategi sebenarnya.
+      `*Strategi:* ${this.strategies.active().name}`,
+      `  EMA 5/13/21 + RSI + ADX, bar ${p.candleTimeframe} menit`,
+      `  Konfirmasi tren HTF ${p.htfTimeframe} menit: ${p.requireHtfTrend ? 'wajib' : 'tidak'}`,
+      '',
+      '*Analisis:*',
+      `  Multi-timeframe ${(mi.timeframes ?? []).join(', ')}`,
+      '  8 dimensi: tren, struktur, momentum, volume,',
+      '  support/resistance, volatilitas, order book, R:R',
+      `  Gerbang FOMO: ${mi.fomoGuardEnabled ? 'aktif' : 'nonaktif'}`,
+      '  Berita + makro: hanya boleh MENURUNKAN skor',
+      '',
+      '*Risk management:*',
+      `  Risiko per trade: ${p.riskPerTradePercent}% ekuitas`,
+      `  Maks porsi 1 posisi: ${p.maxPositionPercent}% ekuitas`,
+      `  Stop: ${p.atrStopMultiplier}x ATR, dibatasi ${p.minStopPercent}%-${p.maxStopPercent}%`,
+      `  Rugi harian maks: ${p.maxDailyLossPercent}% · drawdown maks: ${p.maxDrawdownPercent}%`,
+      `  Rugi berurutan maks: ${p.maxConsecutiveLosses}x`,
+      '',
+      '*Ambang lolos:*',
+      `  Skor minimum: ${p.opportunityMinScore}/100`,
+      `  R:R minimum: 1 : ${mi.noTrade?.minRiskReward ?? '-'}`,
+      `  ATR maksimum: ${mi.noTrade?.maxAtrPercent ?? '-'}%`,
+      `  Biaya maks: ${mi.noTrade?.maxCostToAtrRatio ?? '-'}x gerakan per bar`,
+      '',
+      '_Skor adalah kualitas setup menurut aturan di atas —_',
+      '_BUKAN peluang untung._',
+    ];
+  }
+
+  /**
+   * Dashboard: apa yang bisa dan LAYAK dibeli sekarang.
+   *
+   * Dua hal yang harus lolos, dan keduanya ditampilkan terpisah karena
+   * tindakannya berbeda:
+   *
+   *   MODAL  — ukuran posisi di atas minimum exchange?  tidak -> tambah modal
+   *   SINYAL — keputusan setup dan skor cukup?          tidak -> tunggu
+   *
+   * Versi pertama dashboard hanya memeriksa MODAL, lalu menandai pair sebagai
+   * "MAMPU" dan mengirim tombol BUY untuknya — termasuk untuk pair yang
+   * `/peluang` tidak akan pernah tawarkan karena keputusannya NO_TRADE.
+   * Dua perintah yang menampilkan kesimpulan berbeda tentang pair yang sama
+   * membuat keduanya tidak bisa dipercaya.
+   *
+   * Sekarang ambang penawarannya SAMA dengan `/peluang`: kartu bertombol hanya
+   * dikirim untuk pair yang lolos modal DAN sinyal.
+   */
+  private async dashboard(): Promise<string> {
+    const state = await this.portfolio.getState();
+    const params = this.config.params();
+
+    const scan = await this.opportunities.scanForDashboard();
+    const checks = this.affordability.checkMany(
+      scan.candidates.map((c) => ({ pair: c.pair, atrPercent: c.atrPercent })),
+      state.equityIdr,
+    );
+
+    // Gabungkan kedua dimensi per pair.
+    const rows = checks.map((c) => {
+      const hit = scan.candidates.find((x) => x.pair === c.pair);
+      const score = hit?.score ?? 0;
+      const decision = hit?.decision ?? 'NO_TRADE';
+      const isSetup = decision === 'TRADE_SETUP' || decision === 'HIGH_QUALITY_SETUP';
+      const scoreOk = score >= params.opportunityMinScore;
+
+      return {
+        ...c,
+        score,
+        decision,
+        signalOk: isSetup && scoreOk,
+        signalReason: !isSetup
+          ? `keputusan ${decision}`
+          : !scoreOk
+            ? `skor ${score} < ${params.opportunityMinScore}`
+            : '',
+      };
+    });
+
+    const siap = rows.filter((r) => r.status === 'MAMPU' && r.signalOk);
+    const modalOkSinyalBelum = rows.filter((r) => r.status === 'MAMPU' && !r.signalOk);
+    const modalBelum = rows.filter((r) => r.status !== 'MAMPU');
+
+    const lines = [
+      '📊 *DASHBOARD*',
+      '',
+      '```',
+      `  Ekuitas   ${idr(state.equityIdr)}`,
+      `  Kas       ${idr(state.cashIdr)}`,
+      `  Posisi    ${state.openPositions}`,
+      `  Risiko    ${idr(state.equityIdr * (params.riskPerTradePercent / 100))}/trade`,
+      '```',
+      `_Minimum order Indodax ${idr(10000)} · dipindai ${scan.scanned} pair_`,
+      '',
+      '*Dua syarat harus lolos:*',
+      '  💰 MODAL — posisi di atas minimum exchange',
+      '  📈 SINYAL — setup valid dan skor cukup',
+      '',
+    ];
+
+    if (siap.length) {
+      lines.push(`🟢 *SIAP BELI (${siap.length})*`, '');
+      for (const r of siap) {
+        lines.push(
+          `*${r.pair.toUpperCase()}* — skor ${r.score}/100 · ${r.decision}`,
+          '```',
+          `  beli    ${idr(r.cappedIdr)}  (${r.equitySharePercent.toFixed(0)}% ekuitas)`,
+          `  stop    ${r.stopPercent.toFixed(2)}%`,
+          `  risiko  ${idr(r.riskIdr)}`,
+          '```',
+        );
+      }
+      lines.push('_Kartu bertombol dikirim menyusul._', '');
+    } else {
+      lines.push('⚪ *Belum ada yang siap dibeli.*', '');
+    }
+
+    if (modalOkSinyalBelum.length) {
+      lines.push(`💰 *Modal cukup, sinyal belum (${modalOkSinyalBelum.length})*`);
+      for (const r of modalOkSinyalBelum.slice(0, 6)) {
+        lines.push(`• ${r.pair.toUpperCase()} — ${r.signalReason}`);
+      }
+      lines.push('_Tindakan: tunggu. Modalnya sudah cukup._', '');
+    }
+
+    if (modalBelum.length) {
+      lines.push(`📉 *Modal belum cukup (${modalBelum.length})*`);
+      for (const r of modalBelum.slice(0, 6)) {
+        lines.push(
+          `• ${r.pair.toUpperCase()} — butuh ${idr(r.minEquityNeededIdr)}`,
+          `    _stop ${r.stopPercent.toFixed(2)}% → posisi hanya ${idr(r.cappedIdr)}_`,
+        );
+      }
+      const termurah = Math.min(...modalBelum.map((r) => r.minEquityNeededIdr));
+      if (Number.isFinite(termurah) && termurah > state.equityIdr) {
+        lines.push('', `_Termurah butuh tambahan ${idr(termurah - state.equityIdr)}._`);
+      }
+      lines.push('');
+    }
+
+    if (!rows.length) {
+      lines.push(
+        '_Scanner tidak menemukan kandidat. Pakai /blockers untuk_',
+        '_melihat filter mana yang menahan._',
+      );
+    }
+
+    // Kartu HANYA untuk yang lolos kedua syarat — ambang yang sama dengan
+    // /peluang, sehingga kedua perintah tidak pernah berbeda kesimpulan.
+    for (const r of siap.slice(0, params.opportunityMaxPerScan)) {
+      await this.sendDashboardCard(r.pair, r.score);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Satu kartu: grafik, rencana lengkap, lalu tombol.
+   *
+   * Grafik dikirim lebih dulu dan kegagalannya TIDAK membatalkan kartunya —
+   * keputusan beli tidak boleh hilang hanya karena penggambarnya bermasalah.
+   */
+  private async sendDashboardCard(pair: string, score: number): Promise<void> {
+    try {
+      const image = await this.charts.build(pair).catch(() => null);
+      if (image) {
+        const ticker = await this.indodax.getTicker(pair).catch(() => null);
+        await this.notification.sendChart(
+          image,
+          `*${pair.toUpperCase()}*${ticker ? ` — Rp ${fmtPrice(ticker.last)}` : ''} · skor ${score}/100`,
+        );
+      }
+      await this.opportunities.offerNow(pair, score);
+    } catch (err) {
+      this.logger.warn(`Kartu dashboard ${pair} gagal: ${(err as Error).message}`);
+    }
   }
 
   /** Simbol koin dari pair yang ditradingkan: "btcidr" menjadi "btc". */

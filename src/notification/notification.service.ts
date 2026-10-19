@@ -1,3 +1,4 @@
+import { toTelegramMarkdown } from '../common/telegram-markdown';
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
@@ -81,6 +82,86 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
   // ─── Pengiriman ───────────────────────────────────────────────────────────
 
+  /**
+   * Kirim pesan dan kembalikan `message_id` agar bisa diperbarui nanti.
+   *
+   * Dipakai pelaporan progres order: satu pesan yang berubah mengikuti keadaan
+   * jauh lebih mudah diikuti daripada lima pesan terpisah yang membanjiri
+   * percakapan. Peredam duplikat SENGAJA dilewati di sini — progres memang
+   * mengirim teks yang mirip berulang kali.
+   */
+  async sendTrackable(text: string, chatId?: string): Promise<number | null> {
+    if (!this.enabled) {
+      this.logger.debug(`[Telegram nonaktif] ${text.split('\n')[0]}`);
+      return null;
+    }
+
+    const send = (body: Record<string, unknown>) =>
+      axios.post(`https://api.telegram.org/bot${this.botToken}/sendMessage`, body, {
+        timeout: 15000,
+      });
+
+    try {
+      const res = await send({
+        chat_id: chatId ?? this.chatId,
+        text: toTelegramMarkdown(text),
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      });
+      return Number(res.data?.result?.message_id) || null;
+    } catch (err) {
+      const description = err?.response?.data?.description ?? err.message;
+      if (/can't parse entities|parse/i.test(String(description))) {
+        try {
+          const res = await send({
+            chat_id: chatId ?? this.chatId,
+            text,
+            disable_web_page_preview: true,
+          });
+          return Number(res.data?.result?.message_id) || null;
+        } catch {
+          /* jatuh ke log */
+        }
+      }
+      this.logger.warn(`Gagal mengirim pesan terlacak: ${description}`);
+      return null;
+    }
+  }
+
+  /**
+   * Perbarui pesan yang sudah terkirim.
+   *
+   * Telegram menolak pembaruan yang isinya SAMA dengan sebelumnya, dengan
+   * galat "message is not modified". Itu bukan kerusakan — hanya berarti
+   * keadaannya belum berubah — jadi dicatat sebagai debug.
+   */
+  async updateMessage(messageId: number, text: string, chatId?: string): Promise<boolean> {
+    if (!this.enabled || !messageId) return false;
+
+    try {
+      await axios.post(
+        `https://api.telegram.org/bot${this.botToken}/editMessageText`,
+        {
+          chat_id: chatId ?? this.chatId,
+          message_id: messageId,
+          text: toTelegramMarkdown(text),
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+        },
+        { timeout: 15000 },
+      );
+      return true;
+    } catch (err) {
+      const description = err?.response?.data?.description ?? err.message;
+      if (/not modified/i.test(String(description))) {
+        this.logger.debug('Pembaruan pesan dilewati: isinya belum berubah');
+        return false;
+      }
+      this.logger.warn(`Gagal memperbarui pesan: ${description}`);
+      return false;
+    }
+  }
+
   private async sendMessage(text: string, chatId?: string): Promise<void> {
     if (!this.enabled) {
       this.logger.debug(`[Telegram nonaktif] ${text.split('\n')[0]}`);
@@ -133,6 +214,21 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     this.handlers.set(name.toLowerCase(), { handler, help });
   }
 
+  /**
+   * Pengamat pesan grup, dipasang oleh lapisan berita.
+   *
+   * Berupa callback alih-alih injeksi langsung supaya NotificationService
+   * tidak bergantung pada modul berita — ia sudah menjadi dependensi banyak
+   * modul lain, dan menambah arah ketergantungan baru akan membuat lingkaran.
+   *
+   * Mengembalikan true bila pesan diambil sebagai bahan pengamatan.
+   */
+  private groupObserver?: (chatId: string, chatTitle: string, text: string) => boolean;
+
+  registerGroupObserver(fn: (chatId: string, chatTitle: string, text: string) => boolean): void {
+    this.groupObserver = fn;
+  }
+
   private startPolling(): void {
     const poll = async () => {
       if (this.stopped) return;
@@ -167,8 +263,20 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     if (!message?.text) return;
 
     const fromChatId = String(message.chat.id);
-    // Hanya chat yang dikonfigurasi yang boleh mengendalikan bot.
+
+    /**
+     * Pengamat grup dipanggil SEBELUM gerbang perintah, tetapi tidak
+     * melemahkannya.
+     *
+     * Urutannya penting dan mudah salah: pengamat hanya MEMBACA dan selalu
+     * diakhiri `return`, sehingga pesan dari grup yang diamati tidak pernah
+     * sampai ke penangan perintah. Grup yang diamati karena itu tidak bisa
+     * menjalankan satu perintah pun — hanya chat yang dikonfigurasi bisa.
+     */
     if (fromChatId !== this.chatId) {
+      if (this.groupObserver?.(fromChatId, message.chat.title ?? '', message.text)) {
+        return;
+      }
       this.logger.warn(`Perintah dari chat tidak dikenal ditolak: ${fromChatId}`);
       return;
     }
@@ -252,11 +360,79 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         { timeout: 10000 },
       );
     } catch (err) {
-      this.logger.warn(`answerCallbackQuery gagal: ${err.message}`);
+      // Pesan asli Telegram ada di response.data.description; `err.message`
+      // hanya berbunyi "Request failed with status code 400" dan tidak
+      // memberi tahu apa pun tentang sebabnya.
+      const description = err?.response?.data?.description ?? err.message;
+
+      // Callback yang kedaluwarsa BUKAN kerusakan: Telegram hanya menerima
+      // jawaban dalam sekitar satu menit, dan operasi order yang memakan
+      // puluhan detik membuat antrean callback melewati batas itu. Dicatat
+      // sebagai debug agar tidak terbaca sebagai gangguan.
+      const expired = /too old|query id is invalid|response timeout/i.test(String(description));
+      if (expired) {
+        this.logger.debug(`answerCallbackQuery dilewati (kedaluwarsa): ${description}`);
+      } else {
+        this.logger.warn(`answerCallbackQuery gagal: ${description}`);
+      }
     }
   }
 
   /** Kirim pesan dengan tombol inline. */
+  /**
+   * Perbarui pesan BESERTA tombolnya.
+   *
+   * Inilah yang membuat menu terasa seperti antarmuka, bukan percakapan:
+   * menekan tombol mengganti isi pesan yang sama alih-alih menambah pesan
+   * baru. Tanpa ini, menjelajah enam menu meninggalkan enam pesan dan riwayat
+   * yang berguna tergeser ke atas.
+   */
+  async updateWithButtons(
+    messageId: number,
+    text: string,
+    buttons: Array<Array<{ label: string; data: string }>>,
+    chatId?: string,
+  ): Promise<'ok' | 'unchanged' | 'failed'> {
+    if (!this.enabled || !messageId) return 'failed';
+
+    const keyboard = {
+      inline_keyboard: buttons.map((row) =>
+        row.map((b) => ({ text: b.label, callback_data: b.data })),
+      ),
+    };
+
+    try {
+      await axios.post(
+        `https://api.telegram.org/bot${this.botToken}/editMessageText`,
+        {
+          chat_id: chatId ?? this.chatId,
+          message_id: messageId,
+          text: toTelegramMarkdown(text),
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+          reply_markup: keyboard,
+        },
+        { timeout: 15000 },
+      );
+      return 'ok';
+    } catch (err) {
+      const description = err?.response?.data?.description ?? err.message;
+
+      /**
+       * "not modified" DIBEDAKAN dari kegagalan.
+       *
+       * Telegram menolak pembaruan yang isinya sama persis — itu terjadi tiap
+       * kali operator menekan panel yang sedang terbuka, dan bukan kerusakan.
+       * Menyamakannya dengan kegagalan membuat pemanggil mengirim pesan
+       * duplikat setiap kali tombol yang sama ditekan dua kali.
+       */
+      if (/not modified/i.test(String(description))) return 'unchanged';
+
+      this.logger.warn(`Gagal memperbarui menu: ${description}`);
+      return 'failed';
+    }
+  }
+
   async sendWithButtons(
     text: string,
     buttons: Array<Array<{ label: string; data: string }>>,
@@ -644,7 +820,20 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     try {
       const fields: Record<string, string> = { chat_id: chatId ?? this.chatId };
       if (caption) {
-        fields.caption = caption.length > 1024 ? caption.slice(0, 1021) + '…' : caption;
+        /**
+         * Caption dibersihkan sama seperti pesan teks.
+         *
+         * Tanpa ini Telegram menolak seluruh kirimannya:
+         *   "can't parse entities: Can't find end of the entity
+         *    starting at byte offset 72"
+         *
+         * Gejalanya menipu — yang gagal adalah GAMBARNYA, padahal sebabnya
+         * penanda Markdown yang tidak berpasangan di keterangannya. Pemotongan
+         * pada 1024 karakter juga bisa memutus penanda di tengah, jadi
+         * pembersihan dilakukan SETELAH dipotong.
+         */
+        const trimmed = caption.length > 1024 ? caption.slice(0, 1021) + '…' : caption;
+        fields.caption = toTelegramMarkdown(trimmed);
         fields.parse_mode = 'Markdown';
       }
 

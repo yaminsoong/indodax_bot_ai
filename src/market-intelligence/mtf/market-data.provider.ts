@@ -26,6 +26,24 @@ export class MarketDataProvider {
 
   /** Cache candle; kunci `pair|timeframe`. */
   private cache = new Map<string, { at: number; candles: Candle[] }>();
+  /**
+   * Pair+timeframe yang endpoint chart Indodax kembalikan KOSONG.
+   *
+   * Dipisahkan dari `cache` karena artinya berbeda: cache menyimpan data,
+   * ini menyimpan fakta bahwa datanya tidak ada. Menyimpan keduanya di satu
+   * map membuat "belum diambil" tidak bisa dibedakan dari "diambil, hasilnya
+   * nol".
+   */
+  private tanpaRiwayat = new Map<string, number>();
+
+  /** Berapa lama pair tanpa riwayat tidak ditanyai lagi. */
+  private static readonly TANPA_RIWAYAT_MS = 30 * 60_000;
+
+  /** Pair+timeframe yang diketahui tidak punya riwayat chart. */
+  pairTanpaRiwayat(): string[] {
+    const batas = Date.now() - MarketDataProvider.TANPA_RIWAYAT_MS;
+    return [...this.tanpaRiwayat.entries()].filter(([, at]) => at >= batas).map(([k]) => k);
+  }
 
   constructor(private readonly indodax: IndodaxService) {}
 
@@ -42,6 +60,15 @@ export class MarketDataProvider {
   /** Ambil candle satu timeframe (dengan cache). */
   async getCandles(pair: string, tf: Timeframe, bars: number): Promise<Candle[]> {
     const key = `${pair.toLowerCase()}|${tf}`;
+
+    // Pair yang baru saja terbukti tanpa riwayat tidak ditanyai lagi: tanpa
+    // ini, setiap pemindaian membuang satu permintaan untuk hasil yang sudah
+    // diketahui nol.
+    const kosongSejak = this.tanpaRiwayat.get(key);
+    if (kosongSejak && Date.now() - kosongSejak < MarketDataProvider.TANPA_RIWAYAT_MS) {
+      return [];
+    }
+
     const hit = this.cache.get(key);
     if (hit && Date.now() - hit.at < this.ttlMs(tf) && hit.candles.length >= bars * 0.9) {
       return hit.candles;
@@ -62,6 +89,29 @@ export class MarketDataProvider {
       candles = await this.indodax.getCandles(pair, TIMEFRAME_MINUTES[tf], bars);
     }
 
+    /**
+     * Hasil KOSONG ditandai, bukan di-cache seperti hasil biasa.
+     *
+     * Syarat hit di atas menuntut `candles.length >= bars * 0.9`, sehingga
+     * entri kosong tidak pernah memenuhi syarat itu — akibatnya setiap
+     * permintaan mengambil ulang, selamanya, untuk pair yang memang tidak
+     * punya riwayat chart.
+     *
+     * Terukur pada SHOWIDR (2026-10-19): pair itu AKTIF diperdagangkan —
+     * volume Rp878 juta, naik 6,85%, bid/ask hidup — tetapi endpoint chart
+     * Indodax mengembalikan 0 candle untuk semua timeframe. Entri kosongnya
+     * menetap di cache dan membuat health check melaporkan "SEBAGIAN KOSONG"
+     * tanpa akhir.
+     *
+     * Ditandai dengan TTL panjang: pair baru listing akhirnya mendapat
+     * riwayat, jadi penandanya harus kedaluwarsa — tetapi tidak setiap menit.
+     */
+    if (!candles.length) {
+      this.tanpaRiwayat.set(key, Date.now());
+      return candles;
+    }
+
+    this.tanpaRiwayat.delete(key);
     this.cache.set(key, { at: Date.now(), candles });
     return candles;
   }

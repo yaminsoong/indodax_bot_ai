@@ -33,6 +33,9 @@ describe('RiskService', () => {
     svc = new RiskService(
       config as any,
       pairs as any,
+      // Spread tidak diketahui dalam pengujian ini: null memaksa jalur
+      // cadangan (tick size) alih-alih mengarang angka spread.
+      { getCachedSpreadPercent: () => null } as any,
       {} as any, // portfolio — di-stub per test
       { log: jest.fn() } as any,
       {} as any, // tradeRepo — di-stub per test

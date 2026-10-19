@@ -26,9 +26,29 @@ export interface PortfolioState {
     unrealizedPnl: number;
     unrealizedPercent: number;
     rMultiple: number;
+    /**
+     * True bila harga pasar pair ini TIDAK terbaca dan angka di atas memakai
+     * harga entry sebagai pengganti.
+     *
+     * Tanpa penanda ini, posisi yang harganya gagal dibaca menampilkan P&L
+     * tepat 0,00 — tidak bisa dibedakan dari posisi yang memang datar.
+     * Operator akan membacanya sebagai "aman", padahal yang sebenarnya
+     * terjadi adalah "tidak diketahui".
+     */
+    priceStale: boolean;
   }>;
   /** True bila saldo tidak dapat dibaca dari exchange. */
   degraded: boolean;
+  /**
+   * Apa saja yang gagal dibaca, satu baris per kegagalan.
+   *
+   * `degraded` hanya menjawab "ada yang salah"; ini menjawab "yang mana" —
+   * dan tindakannya berbeda antara saldo yang tidak terbaca dan harga satu
+   * pair yang tidak terbaca.
+   */
+  degradedReasons: string[];
+  /** Kapan potret ini diambil. */
+  asOf: string;
 }
 
 /**
@@ -79,8 +99,27 @@ export class PortfolioService {
    */
   async getCashIdr(): Promise<number> {
     if (this.config.isLive) {
-      const balance = await this.indodax.getBalance();
-      return balance.idr;
+      /**
+       * Dana yang DITAHAN order terbuka ikut dihitung sebagai kas.
+       *
+       * Indodax memindahkan IDR dari `balance` ke `balance_hold` begitu order
+       * limit dipasang. Uang itu belum dibelanjakan — ia masih milik akun dan
+       * akan kembali bila ordernya dibatalkan. Mengabaikannya membuat ekuitas
+       * jatuh seketika setiap kali order dipasang.
+       *
+       * Akibatnya terukur pada 2026-10-12, mode LIVE:
+       *   saldo         Rp16.998
+       *   order + fee   Rp11.071  (ditahan)
+       *   kas terbaca   Rp5.927
+       *   drawdown      1 - 5.927/16.998 = 65,13%
+       *   log bot       "Drawdown 65.14% >= batas 15%"
+       *
+       * Kill switch lalu menghentikan seluruh entry — padahal bot belum
+       * membukukan satu trade pun dan tidak kehilangan uang sama sekali.
+       * Memasang order seharusnya tidak pernah terlihat seperti kerugian.
+       */
+      const { available, hold } = await this.indodax.getBalanceWithHold();
+      return (available.idr ?? 0) + (hold.idr ?? 0);
     }
 
     if (this.simulatedCash === null) {
@@ -125,11 +164,13 @@ export class PortfolioService {
 
     let cashIdr = 0;
     let degraded = false;
+    const degradedReasons: string[] = [];
     try {
       cashIdr = await this.getCashIdr();
     } catch (err) {
       this.logger.error(`Gagal membaca saldo: ${err.message}`);
       degraded = true;
+      degradedReasons.push(`Saldo kas TIDAK terbaca: ${err.message}`);
     }
 
     const positions: PortfolioState['positions'] = [];
@@ -138,11 +179,17 @@ export class PortfolioService {
 
     for (const t of openTrades) {
       let currentPrice = t.entryPrice;
+      let priceStale = false;
       try {
         currentPrice = await this.getPrice(t.pair);
       } catch (err) {
         this.logger.warn(`Harga ${t.pair} tidak terbaca, memakai harga entry: ${err.message}`);
         degraded = true;
+        priceStale = true;
+        degradedReasons.push(
+          `Harga ${t.pair.toUpperCase()} TIDAK terbaca — P&L posisi #${t.id} memakai harga entry, ` +
+            'jadi angkanya 0 karena TIDAK DIKETAHUI, bukan karena datar',
+        );
       }
 
       const qty = t.remainingQuantity || t.quantity;
@@ -163,6 +210,7 @@ export class PortfolioService {
         unrealizedPercent: t.entryPrice > 0 ? ((currentPrice - t.entryPrice) / t.entryPrice) * 100 : 0,
         rMultiple:
           t.initialRiskPerUnit > 0 ? (currentPrice - t.entryPrice) / t.initialRiskPerUnit : 0,
+        priceStale,
       });
     }
 
@@ -182,16 +230,55 @@ export class PortfolioService {
       unrealizedPnl,
       positions,
       degraded,
+      degradedReasons,
+      asOf: new Date().toISOString(),
     };
   }
 
+  /**
+   * Puncak ekuitas, HANYA dari snapshot yang basisnya sebanding.
+   *
+   * Pada mode SIMULASI, modal awal adalah setelan yang bisa diubah. Mengubahnya
+   * TIDAK membuat ekuitas turun — ia memulai percobaan yang berbeda. Tetapi
+   * puncak lama tetap tersimpan, dan drawdown lalu dihitung dari basis yang
+   * sudah tidak berlaku.
+   *
+   * Terukur pada 2026-10-16: `SIMULATION_CAPITAL_IDR` diubah 10.000.000 ->
+   * 1.000.000, puncak lama 9 September masih 10.000.000, sehingga
+   * (10.000.000 - 1.000.000) / 10.000.000 = 90,00% — tepat angka yang membuat
+   * kill switch menyala 55 kali dalam 24 jam dan memblokir SELURUH entry,
+   * termasuk 24 sinyal BUY yang sudah lolos semua filter. Simulasi tampak
+   * berjalan padahal sama sekali tidak bisa membuka posisi.
+   *
+   * Bentuk bug yang sama pernah terjadi di LIVE: dana tertahan dibaca sebagai
+   * drawdown 65%. Dua-duanya berasal dari puncak yang dibandingkan terhadap
+   * basis yang berbeda.
+   *
+   * Karena itu pada SIMULASI puncak dibatasi tidak melebihi modal awal yang
+   * BERLAKU SEKARANG. Pada LIVE tidak ada pembatasan: di sana puncak memang
+   * riwayat nyata dari uang nyata, dan membatasinya akan menyembunyikan
+   * drawdown yang sungguh terjadi.
+   */
   private async getPeakEquity(): Promise<number> {
     const row = await this.equityRepo
       .createQueryBuilder('e')
       .select('MAX(e.equityIdr)', 'peak')
       .where('e.mode = :mode', { mode: this.config.mode })
       .getRawOne();
-    return Number(row?.peak) || 0;
+
+    const peak = Number(row?.peak) || 0;
+    if (this.config.isLive) return peak;
+
+    const modal = this.config.simulationCapitalIdr;
+    if (peak > modal) {
+      this.logger.warn(
+        `Puncak ekuitas simulasi ${Math.round(peak)} melebihi modal awal ${modal} — ` +
+          'snapshot itu berasal dari modal simulasi yang berbeda dan DIABAIKAN. ' +
+          'Tanpa ini, mengubah SIMULATION_CAPITAL_IDR akan tampak sebagai drawdown.',
+      );
+      return modal;
+    }
+    return peak;
   }
 
   /** Simpan snapshot ekuitas — menyusun equity curve dan riwayat drawdown. */

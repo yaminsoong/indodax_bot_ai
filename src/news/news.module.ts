@@ -4,6 +4,7 @@ import { RssClient } from './rss.client';
 import { SentimentService } from './sentiment.service';
 import { CoinMatcherService } from './coin-matcher.service';
 import { AiSentimentService } from './ai-sentiment.service';
+import { GroupSentimentService } from './group-sentiment.service';
 import { AiModule } from '../ai/ai.module';
 
 /**
@@ -14,7 +15,7 @@ import { AiModule } from '../ai/ai.module';
  */
 @Module({
   imports: [AiModule],
-  providers: [RssClient, SentimentService, CoinMatcherService, AiSentimentService, NewsService],
-  exports: [NewsService, SentimentService, CoinMatcherService, AiSentimentService],
+  providers: [RssClient, SentimentService, CoinMatcherService, AiSentimentService, GroupSentimentService, NewsService],
+  exports: [NewsService, SentimentService, CoinMatcherService, AiSentimentService, GroupSentimentService],
 })
 export class NewsModule {}

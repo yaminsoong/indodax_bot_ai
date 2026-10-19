@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TradingService } from '../trading/trading.service';
+import { ScoreAttributionService } from '../trading/score-attribution.service';
 import { PortfolioService } from '../trading/portfolio.service';
 import { ReconciliationService } from '../trading/reconciliation.service';
 import { RecoveryService } from '../trading/recovery.service';
@@ -17,6 +18,8 @@ import { NewsService } from '../news/news.service';
 import { GlobalMarketService } from '../global-market/global-market.service';
 import { AiService } from '../ai/ai.service';
 import { AiAnalystService } from '../analyst/ai-analyst.service';
+import { AffordabilityService } from '../trading/affordability.service';
+import { OpportunityWatcherService } from '../notification/opportunity-watcher.service';
 import { AuditService } from '../database/audit.service';
 import { AuditCategory } from '../database/entities/audit-log.entity';
 import { ApiKeyGuard } from './api-key.guard';
@@ -46,6 +49,9 @@ export class DashboardController {
     private readonly globalMarket: GlobalMarketService,
     private readonly ai: AiService,
     private readonly analyst: AiAnalystService,
+    private readonly affordability: AffordabilityService,
+    private readonly opportunities: OpportunityWatcherService,
+    private readonly scoreAttribution: ScoreAttributionService,
     private readonly audit: AuditService,
   ) {}
 
@@ -195,6 +201,71 @@ export class DashboardController {
     const q = (body?.question ?? '').trim();
     if (!q) throw new BadRequestException('Isi "question" dengan pertanyaannya');
     return this.analyst.ask(q);
+  }
+
+  @Get('affordability')
+  @ApiOperation({
+    summary: 'Pair mana yang benar-benar bisa dibeli dengan saldo sekarang',
+  })
+  async getAffordability() {
+    const [state, scan] = await Promise.all([
+      this.portfolio.getState(),
+      this.opportunities.scanForDashboard(),
+    ]);
+
+    const checks = this.affordability.checkMany(
+      scan.candidates.map((c) => ({ pair: c.pair, atrPercent: c.atrPercent })),
+      state.equityIdr,
+    );
+    const minScore = this.config.params().opportunityMinScore;
+
+    return {
+      equityIdr: state.equityIdr,
+      cashIdr: state.cashIdr,
+      openPositions: state.openPositions,
+      minOrderIdr: 10000,
+      scanned: scan.scanned,
+      /**
+       * Kelayakan MODAL dan kualitas SINYAL dilaporkan terpisah.
+       *
+       * Keduanya harus lolos sebelum ada order, dan tindakan bila gagal
+       * berbeda: modal kurang berarti tambah modal, sinyal kurang berarti
+       * tunggu. Menggabungkannya menjadi satu status membuat operator tidak
+       * tahu harus melakukan apa.
+       *
+       * `readyToBuy` memakai ambang yang SAMA dengan /peluang dan /dashboard,
+       * supaya ketiganya tidak pernah berbeda kesimpulan tentang pair yang
+       * sama.
+       */
+      checks: checks.map((c) => {
+        const hit = scan.candidates.find((x) => x.pair === c.pair);
+        const score = hit?.score ?? null;
+        const decision = hit?.decision ?? null;
+        const isSetup = decision === 'TRADE_SETUP' || decision === 'HIGH_QUALITY_SETUP';
+        const scoreOk = (score ?? 0) >= minScore;
+
+        return {
+          ...c,
+          score,
+          decision,
+          signalOk: isSetup && scoreOk,
+          signalReason: !isSetup
+            ? `keputusan ${decision ?? 'tidak diketahui'}`
+            : !scoreOk
+              ? `skor ${score} di bawah ambang ${minScore}`
+              : null,
+          readyToBuy: c.status === 'MAMPU' && isSetup && scoreOk,
+        };
+      }),
+    };
+  }
+
+  @Get('score-attribution')
+  @ApiOperation({
+    summary: 'Apakah skor Market Intelligence benar-benar meramalkan hasil?',
+  })
+  async getScoreAttribution() {
+    return this.scoreAttribution.attribute();
   }
 
   @Get('ai/status')

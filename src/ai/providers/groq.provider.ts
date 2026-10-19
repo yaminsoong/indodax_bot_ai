@@ -12,6 +12,11 @@ import {
 /**
  * Groq — inferensi model terbuka di perangkat LPU.
  *
+ * CATATAN: daftar model Groq BERUBAH tanpa pemberitahuan. Default sebelumnya
+ * `llama-3.3-70b-versatile` sudah dihapus dan membalas HTTP 404 — kegagalan
+ * yang justru muncul saat cadangan ini dibutuhkan. Periksa dengan
+ * `GET /openai/v1/models` sebelum menyalahkan kuncinya.
+ *
  * CATATAN PENTING: Groq BUKAN Grok. Groq adalah penyedia inferensi dengan tier
  * gratis permanen; Grok adalah model milik xAI. Keduanya sering tertukar dan
  * konsekuensinya berbeda jauh — yang satu gratis, yang lain berbayar.
@@ -29,7 +34,9 @@ export class GroqProvider implements AiProvider {
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('GROQ_API_KEY', '').trim();
-    this.model = this.config.get<string>('GROQ_MODEL', 'llama-3.3-70b-versatile').trim();
+    this.model = this.config
+      .get<string>('GROQ_MODEL', 'openai/gpt-oss-120b')
+      .trim();
     this.http = axios.create({
       baseURL: this.config.get<string>('GROQ_BASE_URL', 'https://api.groq.com/openai/v1'),
       timeout: 30000,
@@ -87,6 +94,8 @@ export class GroqProvider implements AiProvider {
         `Groq gagal${status ? ` (HTTP ${status})` : ''}: ${detail}`,
         this.name,
         status === 429 || status === 503,
+        status === 401 || status === 403,
+        status === 429,
       );
     }
   }

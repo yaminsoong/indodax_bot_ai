@@ -25,6 +25,8 @@ export class GeminiProvider implements AiProvider {
   private readonly http: AxiosInstance;
   private readonly apiKey: string;
   readonly model: string;
+  /** Gemini punya alat google_search bawaan; penyedia lain di sini tidak. */
+  readonly supportsWebSearch = true;
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('GEMINI_API_KEY', '').trim();
@@ -69,6 +71,14 @@ export class GeminiProvider implements AiProvider {
             // terjadi lebih dulu — lihat catatan di AiCompletionRequest.
             ...(req.disableThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
           },
+          /**
+           * Alat pencarian dipanggil oleh MODEL, bukan oleh kita.
+           *
+           * Ia hanya mencari bila menilai data yang diberikan tidak cukup,
+           * sehingga pertanyaan yang sudah terjawab oleh data bot tidak
+           * menghabiskan kuota pencarian.
+           */
+          ...(req.webSearch ? { tools: [{ google_search: {} }] } : {}),
         },
         { params: { key: this.apiKey } },
       );
@@ -88,6 +98,21 @@ export class GeminiProvider implements AiProvider {
       }
 
       const usage = res.data?.usageMetadata;
+
+      /**
+       * Sitasi diambil dari groundingMetadata, bukan dari teks jawaban.
+       *
+       * Model kadang menyebut nama situs di dalam prosa tanpa benar-benar
+       * membukanya. Hanya daftar ini yang membuktikan halaman itu memang
+       * dibaca — dan tanpa pembuktian itu, "menurut Reuters" tak ada artinya.
+       */
+      const grounding = candidate?.groundingMetadata;
+      const sources = (grounding?.groundingChunks ?? [])
+        .map((c: { web?: { title?: string; uri?: string } }) => ({
+          title: c?.web?.title ?? '',
+          uri: c?.web?.uri ?? '',
+        }))
+        .filter((x: { uri: string }) => x.uri);
 
       // Terpotong karena kuota: teksnya ada tetapi belum selesai. Untuk tugas
       // berformat, parser pemanggil akan menolaknya — tetapi sebabnya harus
@@ -109,6 +134,10 @@ export class GeminiProvider implements AiProvider {
         inputTokens: usage?.promptTokenCount,
         outputTokens: usage?.candidatesTokenCount,
         latencyMs: Date.now() - started,
+        ...(sources.length ? { sources } : {}),
+        ...(grounding?.webSearchQueries?.length
+          ? { searchQueries: grounding.webSearchQueries }
+          : {}),
       };
     } catch (err) {
       if (err instanceof AiUnavailableError) throw err;
@@ -124,6 +153,8 @@ export class GeminiProvider implements AiProvider {
         `Gemini gagal${status ? ` (HTTP ${status})` : ''}: ${detail}`,
         this.name,
         status === 429 || status === 503,
+        status === 401 || status === 403,
+        status === 429,
       );
     }
   }

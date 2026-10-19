@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Trade } from '../database/entities/trade.entity';
+import { ExecutionService } from './execution.service';
 import { IndodaxService } from '../indodax/indodax.service';
 import { PairRegistryService } from '../indodax/pair-registry.service';
 import { BotConfigService } from '../config/bot-config.service';
@@ -42,12 +43,50 @@ export class ReconciliationService {
   constructor(
     private readonly config: BotConfigService,
     private readonly indodax: IndodaxService,
+    private readonly execution: ExecutionService,
     private readonly pairs: PairRegistryService,
     private readonly notification: NotificationService,
     private readonly audit: AuditService,
     @InjectRepository(Trade)
     private readonly tradeRepo: Repository<Trade>,
   ) {}
+
+  /**
+   * Order di exchange yang tidak dikenali bot.
+   *
+   * Dipisah dari `reconcile()` supaya bisa diuji langsung. Versi sebelumnya
+   * tertanam di dalam alur panjang, sehingga satu-satunya cara mengujinya
+   * adalah meniru ulang logikanya di dalam test — yang membuktikan testnya
+   * sendiri, bukan kode produksinya.
+   */
+  findOrphanOrders(
+    exchangeOrders: Array<{ order_id: unknown; pair?: unknown; type?: unknown }>,
+    knownOrderIds: Set<string>,
+  ): ReconciliationReport['discrepancies'] {
+    // Order maker yang sedang ditunggu belum punya catatan di database, tetapi
+    // bot MEMANG mengelolanya dan akan membatalkannya sendiri saat timeout.
+    // Melaporkannya sebagai yatim adalah alarm palsu — dan alarm palsu melatih
+    // operator mengabaikan peringatan yang sekali waktu benar.
+    const inFlight = this.execution.inFlightOrderIds();
+    const out: ReconciliationReport['discrepancies'] = [];
+
+    for (const order of exchangeOrders) {
+      const orderId = String(order.order_id);
+      if (knownOrderIds.has(orderId)) continue;
+      if (inFlight.has(orderId)) continue;
+
+      out.push({
+        type: 'ORPHAN_ORDER',
+        pair: String(order.pair ?? '?'),
+        detail:
+          `Order ${orderId} (${order.type}) aktif di Indodax tapi tidak dikenali bot. ` +
+          `Kemungkinan sisa dari crash atau order manual — periksa dan batalkan bila perlu.`,
+        severity: 'WARNING',
+      });
+    }
+
+    return out;
+  }
 
   getLastReport(): ReconciliationReport | null {
     return this.lastReport;
@@ -184,21 +223,10 @@ export class ReconciliationService {
         openTrades.flatMap((t) => [t.entryOrderId, t.exitOrderId].filter(Boolean)),
       );
       const exchangeOrders = await this.indodax.getOpenOrders();
+      const orphans = this.findOrphanOrders(exchangeOrders, knownOrderIds);
 
-      for (const order of exchangeOrders) {
-        const orderId = String(order.order_id);
-        if (knownOrderIds.has(orderId)) continue;
-
-        report.orphanOrders++;
-        report.discrepancies.push({
-          type: 'ORPHAN_ORDER',
-          pair: String(order.pair ?? '?'),
-          detail:
-            `Order ${orderId} (${order.type}) aktif di Indodax tapi tidak dikenali bot. ` +
-            `Kemungkinan sisa dari crash atau order manual — periksa dan batalkan bila perlu.`,
-          severity: 'WARNING',
-        });
-      }
+      report.orphanOrders += orphans.length;
+      report.discrepancies.push(...orphans);
     } catch (err) {
       this.logger.warn(`Gagal membaca open orders: ${err.message}`);
     }

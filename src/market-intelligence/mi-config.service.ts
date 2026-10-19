@@ -49,6 +49,14 @@ export interface MarketIntelligenceParams {
    * memakai konfigurasinya sendiri, dan gerbangnya hidup di lapisan ini.
    */
   fomoGuardEnabled: boolean;
+  /**
+   * Spread maksimum (persen) agar sebuah pair layak dipindai.
+   *
+   * Diukur dari data yang sudah ada di ringkasan pasar, jadi gratis. Ambang
+   * 0,8% menyisakan FARTCOIN, PEPE, DOGE, SHIB dan menyingkirkan BONK (0,73%
+   * masih lolos), BRETT (2,1%), MEW (8,1%), MEME (11,1%).
+   */
+  scannerMaxSpreadPercent: number;
 }
 
 /** Skor minimum bawaan per strategi (bagian 7 spesifikasi). */
@@ -86,6 +94,7 @@ export class MarketIntelligenceConfigService {
       scannerMaxPairs: this.config.num('SCANNER_MAX_PAIRS', 25),
       scannerAlertMinScore: this.config.num('SCANNER_ALERT_MIN_SCORE', 70),
       fomoGuardEnabled: this.config.bool('FOMO_GUARD_ENABLED', true),
+      scannerMaxSpreadPercent: this.config.num('SCANNER_MAX_SPREAD_PERCENT', 0.8),
     };
   }
 
@@ -134,6 +143,10 @@ export class MarketIntelligenceConfigService {
       ),
       maxAtrPercent: this.config.num('MI_MAX_ATR_PERCENT', DEFAULT_NO_TRADE.maxAtrPercent),
       minAtrPercent: this.config.num('MI_MIN_ATR_PERCENT', DEFAULT_NO_TRADE.minAtrPercent),
+      maxCostToAtrRatio: this.config.num(
+        'MI_MAX_COST_TO_ATR_RATIO',
+        DEFAULT_NO_TRADE.maxCostToAtrRatio,
+      ),
       minRelativeVolume: this.config.num(
         'MI_MIN_RELATIVE_VOLUME',
         DEFAULT_NO_TRADE.minRelativeVolume,

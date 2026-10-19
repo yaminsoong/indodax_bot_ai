@@ -74,7 +74,7 @@ export class ConfluenceEngineService {
       this.scoreMomentum(primary, direction, weights, reasons, riskFactors),
       this.scoreVolume(primary, weights, reasons, riskFactors),
       this.scoreSupportResistance(primary, direction, weights, reasons, riskFactors),
-      this.scoreVolatility(primary, weights, reasons, riskFactors),
+      this.scoreVolatility(primary, options, weights, reasons, riskFactors),
       this.scoreOrderBook(options, direction, weights, reasons, riskFactors),
       this.scoreRiskReward(setup, noTrade, weights, reasons, riskFactors),
     ];
@@ -82,7 +82,9 @@ export class ConfluenceEngineService {
     const score = this.combine(dimensions);
 
     // -- No Trade Engine ---------------------------------------------------
-    blockers.push(...this.findBlockers(mtf, primary, direction, setup, noTrade));
+    blockers.push(
+      ...this.findBlockers(mtf, primary, direction, setup, noTrade, options.roundTripCostPercent),
+    );
 
     const decision = blockers.length ? 'NO_TRADE' : decisionForScore(score);
 
@@ -460,8 +462,36 @@ export class ConfluenceEngineService {
 
   // --- Dimensi 6: volatilitas (5%) -----------------------------------------
 
+  /**
+   * Volatilitas dinilai RELATIF TERHADAP BIAYA, bukan terhadap ambang absolut.
+   *
+   * Versi sebelumnya memakai pita ATR tetap: 0,8-3% dianggap baik, di bawah
+   * 0,5% dihukum, di atas 5% dihukum. Pita itu tidak pernah menanyakan hal
+   * yang sesungguhnya menentukan: APAKAH GERAKAN KHAS PAIR INI SANGGUP
+   * MENUTUP BIAYANYA?
+   *
+   * Diukur pada 2026-10-15 dengan spread nyata:
+   *
+   *   ZEREBRO  ATR 7,12%  biaya 0,76%  -> 0,11x   6 menit menutup biaya
+   *   ARC      ATR 6,99%  biaya 0,95%  -> 0,14x   8 menit
+   *   HYPE     ATR 1,07%  biaya 0,43%  -> 0,41x  24 menit
+   *   BTC      ATR 0,53%  biaya 0,40%  -> 0,76x  46 menit
+   *   XAUT     ATR 0,32%  biaya 0,40%  -> 1,25x  75 menit
+   *   PAXG     ATR 0,53%  biaya 1,04%  -> 1,94x 116 menit
+   *
+   * Pita lama memberi BTC nilai tertinggi dan menghukum ZEREBRO - padahal
+   * secara ekonomi urutannya justru terbalik. Rasio di atas 1,0 berarti
+   * gerakan satu bar penuh belum menutup biayanya: mustahil secara
+   * aritmetika, berapa pun bagusnya polanya.
+   *
+   * ATR ekstrem TIDAK dihukum di sini. Ia memang masalah, tetapi masalah
+   * UKURAN POSISI - dan sudah ditangani `maxAtrPercent` sebagai penolak tegas
+   * serta risk engine lewat batas jarak stop. Menghukumnya dua kali membuat
+   * dimensi ini menilai hal yang sama dengan gerbang di atasnya.
+   */
   private scoreVolatility(
     primary: TimeframeAnalysis,
+    options: ConfluenceOptions,
     weights: ConfluenceWeights,
     reasons: Reason[],
     riskFactors: string[],
@@ -472,18 +502,51 @@ export class ConfluenceEngineService {
     }
 
     let raw = NEUTRAL;
+    const cost = options.roundTripCostPercent;
 
-    // Volatilitas menengah adalah yang terbaik: terlalu rendah berarti tidak
-    // ada ruang profit, terlalu tinggi berarti stop tersapu kebisingan.
-    if (vol.atrPercent >= 0.8 && vol.atrPercent <= 3) {
-      raw += 30;
-      reasons.push({ dimension: 'VOLATILITY', kind: 'POSITIVE', text: `ATR ${vol.atrPercent.toFixed(2)}% - volatilitas normal` });
-    } else if (vol.atrPercent < 0.5) {
-      raw -= 20;
-      riskFactors.push(`ATR hanya ${vol.atrPercent.toFixed(2)}% - ruang profit terlalu sempit`);
-    } else if (vol.atrPercent > 5) {
-      raw -= 25;
-      riskFactors.push(`ATR ${vol.atrPercent.toFixed(2)}% - volatilitas ekstrem`);
+    if (cost !== undefined && cost > 0 && vol.atrPercent > 0) {
+      const ratio = cost / vol.atrPercent;
+      const menit = Math.round(ratio * 60);
+
+      if (ratio <= 0.25) {
+        raw += 30;
+        reasons.push({
+          dimension: 'VOLATILITY',
+          kind: 'POSITIVE',
+          text:
+            `Biaya hanya ${(ratio * 100).toFixed(0)}% dari gerakan satu jam ` +
+            `(~${menit} menit untuk menutupnya)`,
+        });
+      } else if (ratio <= 0.5) {
+        raw += 15;
+        reasons.push({
+          dimension: 'VOLATILITY',
+          kind: 'POSITIVE',
+          text: `Biaya ${(ratio * 100).toFixed(0)}% dari gerakan satu jam (~${menit} menit)`,
+        });
+      } else if (ratio <= 1) {
+        raw -= 20;
+        riskFactors.push(
+          `Biaya ${(ratio * 100).toFixed(0)}% dari gerakan satu jam - butuh ~${menit} menit ` +
+            'hanya untuk kembali ke titik nol',
+        );
+      } else {
+        raw -= 35;
+        riskFactors.push(
+          `Gerakan satu jam TIDAK menutup biaya (rasio ${ratio.toFixed(2)}x, ~${menit} menit)`,
+        );
+      }
+    } else {
+      // Tanpa data biaya (backtest: tidak ada spread historis), kembali ke
+      // pita ATR absolut. Lebih baik satu dimensi kurang tajam daripada
+      // memakai biaya yang dikarang.
+      if (vol.atrPercent >= 0.8 && vol.atrPercent <= 3) {
+        raw += 30;
+        reasons.push({ dimension: 'VOLATILITY', kind: 'POSITIVE', text: `ATR ${vol.atrPercent.toFixed(2)}% - volatilitas normal` });
+      } else if (vol.atrPercent < 0.5) {
+        raw -= 20;
+        riskFactors.push(`ATR hanya ${vol.atrPercent.toFixed(2)}% - ruang profit terlalu sempit`);
+      }
     }
 
     if (vol.squeeze) {
@@ -595,6 +658,7 @@ export class ConfluenceEngineService {
     direction: TradeDirection,
     setup: TradeSetup | null,
     t: NoTradeThresholds,
+    roundTripCostPercent?: number,
   ): string[] {
     const blockers: string[] = [];
 
@@ -628,6 +692,36 @@ export class ConfluenceEngineService {
     const atrPercent = primary.indicators.volatility.atrPercent;
     if (atrPercent !== null && atrPercent > t.maxAtrPercent) {
       blockers.push(`Volatilitas ekstrem: ATR ${atrPercent.toFixed(1)}% > batas ${t.maxAtrPercent}%`);
+    }
+
+    /**
+     * 4b. Biaya tidak tertutup oleh gerakan khas pair ini.
+     *
+     * Penolak yang paling tidak terlihat sebelumnya, dan paling mahal. Pair
+     * yang tenang DAN mahal lolos setiap pemeriksaan lain: volumenya besar,
+     * spreadnya di bawah batas, polanya bisa rapi. Yang tidak pernah
+     * ditanyakan adalah apakah gerakannya SANGGUP membayar biaya masuk-keluar.
+     *
+     * Diukur: PAXG butuh 116 menit gerakan normal hanya untuk kembali ke titik
+     * nol, XAUT 75 menit. Strategi yang keluar dalam satu bar 60 menit kalah
+     * secara aritmetika di pair itu - berapa kali pun dicoba, dan sebagus apa
+     * pun analisanya.
+     */
+    if (
+      roundTripCostPercent !== undefined &&
+      roundTripCostPercent > 0 &&
+      atrPercent !== null &&
+      atrPercent > 0
+    ) {
+      const ratio = roundTripCostPercent / atrPercent;
+      if (ratio > t.maxCostToAtrRatio) {
+        blockers.push(
+          `Biaya masuk-keluar ${roundTripCostPercent.toFixed(2)}% melebihi gerakan khas ` +
+            `${atrPercent.toFixed(2)}%/bar (rasio ${ratio.toFixed(2)}x, batas ` +
+            `${t.maxCostToAtrRatio}x) - butuh ~${Math.round(ratio * 60)} menit hanya untuk ` +
+            'kembali ke titik nol',
+        );
+      }
     }
 
     // 5. Rasio imbalan/risiko.

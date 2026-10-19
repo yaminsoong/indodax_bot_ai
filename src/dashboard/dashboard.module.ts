@@ -10,6 +10,8 @@ import { NewsModule } from '../news/news.module';
 import { GlobalMarketModule } from '../global-market/global-market.module';
 import { AiModule } from '../ai/ai.module';
 import { AnalystModule } from '../analyst/analyst.module';
+// OpportunityWatcherService tinggal di modul perintah Telegram.
+import { TelegramCommandModule } from '../notification/telegram-command.module';
 import { DashboardController } from './dashboard.controller';
 import { ApiKeyGuard } from './api-key.guard';
 
@@ -28,6 +30,7 @@ import { ApiKeyGuard } from './api-key.guard';
     GlobalMarketModule,
     AiModule,
     AnalystModule,
+    TelegramCommandModule,
   ],
   controllers: [DashboardController],
   providers: [ApiKeyGuard],

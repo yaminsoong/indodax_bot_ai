@@ -4,6 +4,7 @@ import { In, Repository } from 'typeorm';
 import { Trade } from '../database/entities/trade.entity';
 import { BotConfigService } from '../config/bot-config.service';
 import { PairRegistryService } from '../indodax/pair-registry.service';
+import { IndodaxService } from '../indodax/indodax.service';
 import { PortfolioService } from './portfolio.service';
 import { AuditService } from '../database/audit.service';
 import { clamp } from '../common/num';
@@ -64,6 +65,7 @@ export class RiskService {
   constructor(
     private readonly config: BotConfigService,
     private readonly pairs: PairRegistryService,
+    private readonly indodax: IndodaxService,
     private readonly portfolio: PortfolioService,
     private readonly audit: AuditService,
     @InjectRepository(Trade)
@@ -182,11 +184,16 @@ export class RiskService {
     const openTrades = await this.tradeRepo.find({ where: { status: In(['OPEN', 'PENDING', 'CLOSING']) } });
 
     if (openTrades.length >= params.maxConcurrentTrades) {
-      return deny(`Posisi terbuka sudah maksimum (${openTrades.length}/${params.maxConcurrentTrades})`);
+      return deny(
+        `Sudah ada ${openTrades.length} posisi terbuka, batasnya ${params.maxConcurrentTrades}. ` +
+          'Tutup salah satu dulu bila ingin beli yang ini.',
+      );
     }
 
     if (openTrades.some((t) => t.pair === pair)) {
-      return deny(`Sudah ada posisi terbuka untuk ${pair}`);
+      return deny(
+        `${pair.toUpperCase()} sudah Anda pegang. Bot tidak menambah di koin yang sama.`,
+      );
     }
 
     // ── Batas korelasi ──────────────────────────────────────────────────
@@ -208,7 +215,7 @@ export class RiskService {
 
     // ── Kill switch ─────────────────────────────────────────────────────
     const kill = await this.checkKillSwitch();
-    if (kill.halted) return deny(`Bot dihentikan: ${kill.reasons.join('; ')}`);
+    if (kill.halted) return deny(`Bot sedang menghentikan diri sendiri. Sebabnya: ${kill.reasons.join('; ')}`);
 
     // ── Validasi stop ───────────────────────────────────────────────────
     let stopLossPrice = suggestedStop;
@@ -221,7 +228,10 @@ export class RiskService {
     const stopDistancePercent = ((entryPrice - stopLossPrice) / entryPrice) * 100;
     if (stopDistancePercent > params.maxStopPercent) {
       return deny(
-        `Jarak stop ${stopDistancePercent.toFixed(2)}% melebihi batas ${params.maxStopPercent}%`,
+        `Koin ini bergerak terlalu liar. Supaya tidak kena jual karena gerakan ` +
+        `biasa, batas ruginya harus dipasang ${stopDistancePercent.toFixed(2)}% di bawah ` +
+        `harga — sedangkan setelan Anda hanya mengizinkan ${params.maxStopPercent}%. ` +
+        'Bot memilih tidak beli daripada memasang batas yang pasti kena.',
       );
     }
 
@@ -263,8 +273,10 @@ export class RiskService {
     const info = this.pairs.require(pair);
     if (positionSize < info.minOrderIdr) {
       return deny(
-        `Ukuran posisi ${Math.round(positionSize)} IDR di bawah minimum ${info.minOrderIdr} IDR ` +
-          `(kas ${Math.round(state.cashIdr)} IDR, risiko/trade ${params.riskPerTradePercent}%)`,
+        `Uangnya tidak cukup untuk beli dengan aman. Dengan batas rugi sejauh ini, ` +
+          `bot hanya boleh membelikan Rp ${Math.round(positionSize).toLocaleString('id-ID')} — ` +
+          `sedangkan Indodax mewajibkan minimal Rp ${info.minOrderIdr.toLocaleString('id-ID')}. ` +
+          `Uang bebas Anda Rp ${Math.round(state.cashIdr).toLocaleString('id-ID')}.`,
       );
     }
 
@@ -274,8 +286,27 @@ export class RiskService {
       takeProfitPrice = entryPrice + initialRiskPerUnit * (params.atrTargetMultiplier / params.atrStopMultiplier);
     }
 
-    // Target harus menutup fee dua sisi agar rasio risk/reward tetap jujur.
-    const minProfitablePrice = entryPrice * (1 + feeRate * 2 + 0.001);
+    /**
+     * Target harus menutup SELURUH biaya pulang-pergi agar rasio risk/reward
+     * tetap jujur: fee dua sisi DAN spread.
+     *
+     * Spread sebelumnya tidak dihitung, dan akibatnya terukur. Dengan fee
+     * 0,2% per sisi, target minimum lamanya +0,5% — cukup untuk FARTCOIN
+     * (spread 0,03%, biaya nyata 0,43%), tetapi RUGI untuk setiap pair
+     * ber-spread di atas 0,1%:
+     *
+     *   PEPE  spread 0,14% -> biaya nyata 0,54% > target 0,50%
+     *   SHIB  spread 0,26% -> biaya nyata 0,66% > target 0,50%
+     *   BONK  spread 0,73% -> biaya nyata 1,13% > target 0,50%
+     *
+     * Artinya posisi bisa mencapai take profit dan tetap kehilangan uang,
+     * tanpa satu pun catatan yang menjelaskan sebabnya. Pada backtest
+     * memecoin, PEPE menunjukkan fee drag 52% dan profit factor 0,24.
+     *
+     * Margin 0,1% di akhir menyisakan ruang untuk slippage kecil.
+     */
+    const spreadCost = this.spreadCostRate(pair, entryPrice);
+    const minProfitablePrice = entryPrice * (1 + feeRate * 2 + spreadCost + 0.001);
     if (takeProfitPrice < minProfitablePrice) {
       takeProfitPrice = minProfitablePrice;
     }
@@ -292,7 +323,9 @@ export class RiskService {
       const riskReward = (takeProfitPrice - entryPrice) / initialRiskPerUnit;
       if (riskReward < params.minRiskReward) {
         return deny(
-          `Rasio imbalan/risiko 1:${riskReward.toFixed(2)} di bawah minimum 1:${params.minRiskReward}`,
+          `Untung yang mungkin didapat cuma ${riskReward.toFixed(2)}x dari yang dipertaruhkan. ` +
+          `Setelan Anda mewajibkan minimal ${params.minRiskReward}x, supaya sekali menang ` +
+          'bisa menutup beberapa kali kalah.',
         );
       }
     }
@@ -391,6 +424,44 @@ export class RiskService {
       return this.pairs.takerFeeRate(pair);
     } catch {
       return 0.002;
+    }
+  }
+
+  /**
+   * Biaya spread sebagai fraksi harga, dari tick size pair.
+   *
+   * Spread sesungguhnya hanya diketahui dari order book, yang TIDAK tersedia
+   * saat backtest dan belum tentu segar saat evaluasi. Yang dipakai di sini
+   * adalah batas bawah yang pasti: satu tick. Pair berharga rendah dengan tick
+   * besar punya spread minimum yang signifikan — pada harga Rp1 dengan tick
+   * Rp1, satu tick saja sudah 100%.
+   *
+   * Ini sengaja konservatif ke arah yang aman: meremehkan spread membuat target
+   * terlihat menguntungkan padahal rugi, sedangkan melebihkannya hanya membuat
+   * target sedikit lebih jauh.
+   */
+  private spreadCostRate(pair: string, entryPrice: number): number {
+    if (!(entryPrice > 0)) return 0;
+
+    // Spread NYATA dari cache ringkasan pasar. Upaya pertama memakai tick size
+    // sebagai pengganti, dan itu salah besar: diukur langsung, tick meremehkan
+    // spread sebenarnya sampai 133x pada PEPE dan 544x pada SHIB. Meremehkan
+    // biaya adalah arah kesalahan yang paling berbahaya di sini — target jadi
+    // terlihat menguntungkan padahal rugi.
+    const real = this.indodax.getCachedSpreadPercent(pair);
+    if (real !== null && real >= 0) {
+      // Dibatasi 2%: pair dengan spread lebih lebar dari itu seharusnya sudah
+      // ditolak penyaring likuiditas, bukan dikompensasi dengan target jauh.
+      return Math.min(real / 100, 0.02);
+    }
+
+    // Cache belum terisi. Tick size dipakai hanya sebagai lantai — jauh lebih
+    // baik daripada nol, yang berarti "tidak ada biaya spread sama sekali".
+    try {
+      const tick = this.pairs.require(pair).priceStep;
+      return tick > 0 ? Math.min(tick / entryPrice, 0.02) : 0;
+    } catch {
+      return 0;
     }
   }
 

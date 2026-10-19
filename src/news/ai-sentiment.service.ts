@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AiService } from '../ai/ai.service';
 import { SentimentService, SentimentResult } from './sentiment.service';
 import { NewsImpact } from './news.types';
@@ -86,9 +87,25 @@ export class AiSentimentService {
   constructor(
     private readonly ai: AiService,
     private readonly lexicon: SentimentService,
+    private readonly config: ConfigService,
   ) {}
 
+  /**
+   * Sakelar terpisah dari ketersediaan AI.
+   *
+   * Tanpa ini, satu-satunya cara menghemat kuota adalah mematikan AI
+   * seluruhnya — termasuk /ask, padahal justru di situ AI paling berguna.
+   * Penilaian berita punya jalur kamus kata yang sudah berfungsi, sedangkan
+   * /ask tanpa AI hanya bisa menyodorkan tabel data.
+   *
+   * Default-nya MATI: tier gratis tipis, dan kamus kata sudah menangani
+   * berita tanpa memakai kuota sama sekali.
+   */
   isEnabled(): boolean {
+    const flag = (this.config.get<string>('NEWS_AI_SENTIMENT', 'false') ?? 'false')
+      .trim()
+      .toLowerCase();
+    if (flag !== 'true' && flag !== '1') return false;
     return this.ai.isAvailable();
   }
 

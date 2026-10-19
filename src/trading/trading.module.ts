@@ -9,8 +9,11 @@ import { StrategyModule } from '../strategy/strategy.module';
 import { NotificationModule } from '../notification/notification.module';
 import { MarketIntelligenceModule } from '../market-intelligence/market-intelligence.module';
 import { RiskService } from './risk.service';
+import { AffordabilityService } from './affordability.service';
 import { TradingService } from './trading.service';
 import { PortfolioService } from './portfolio.service';
+import { ScoreAttributionService } from './score-attribution.service';
+import { LevelEditorService } from './level-editor.service';
 import { ExecutionService } from './execution.service';
 import { ReconciliationService } from './reconciliation.service';
 import { RecoveryService } from './recovery.service';
@@ -24,7 +27,8 @@ import { RecoveryService } from './recovery.service';
     NotificationModule,
     MarketIntelligenceModule,
   ],
-  providers: [
+  providers: [LevelEditorService, ScoreAttributionService, 
+    AffordabilityService,
     PortfolioService,
     RiskService,
     ExecutionService,
@@ -32,6 +36,7 @@ import { RecoveryService } from './recovery.service';
     RecoveryService,
     TradingService,
   ],
-  exports: [TradingService, RiskService, PortfolioService, ReconciliationService, RecoveryService],
+  exports: [LevelEditorService, ScoreAttributionService, 
+    AffordabilityService,TradingService, RiskService, PortfolioService, ReconciliationService, RecoveryService],
 })
 export class TradingModule {}

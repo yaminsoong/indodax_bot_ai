@@ -30,6 +30,28 @@ const NEGATIVE_TERMS: Record<string, number> = {
   outflow: 16, outflows: 16, dump: 18, capitulation: 22, default: 22,
   hawkish: 18, tightening: 16, recession: 22, inflation: 12, layoffs: 14,
   'risk-off': 20, 'sell-off': 20, exodus: 18, vulnerability: 18, downtime: 14,
+
+  // --- Bahasa Indonesia ---
+  // Sumber berita Indonesia penting untuk bot yang berdagang di Indodax:
+  // kebijakan Bappebti/OJK dan kabar bursa lokal nyaris tidak pernah muncul
+  // di feed berbahasa Inggris. Tanpa kata-kata ini, seluruh judul Indonesia
+  // dinilai 0 -- diukur langsung: "Bitcoin Anjlok Tajam, Investor Panik Jual"
+  // mendapat skor 0, sementara padanannya dalam Inggris mendapat -24.
+  anjlok: 24, ambruk: 26, merosot: 20, melemah: 14, terjun: 20, tergerus: 16,
+  panik: 20, kepanikan: 20, rugi: 14, kerugian: 14, merugi: 16,
+  dilarang: 28, larangan: 25, melarang: 25, diblokir: 20, disita: 22,
+  penipuan: 28, penipu: 25, pencucian: 22, bodong: 26, pailit: 30, bangkrut: 30,
+  ditangkap: 22, dipidana: 22, digugat: 20, gugatan: 20, sanksi: 20, denda: 16,
+  diretas: 30, peretasan: 30, dibobol: 25, dicuri: 25, pencurian: 25,
+  ditolak: 18, dihentikan: 20, disetop: 20, dibekukan: 18, dicabut: 22,
+  resesi: 22, ambrol: 24, jeblok: 22, lesu: 14, tekanan: 12,
+  // Bentuk AKTIF tanpa awalan di-. Judul "27 Situs Exchange Kripto Diblokir"
+  // tertangkap, tetapi "Korea Selatan Blokir 27 Platform" lolos -- celah yang
+  // sama dengan "cabut izin", dan ditutup dengan cara yang sama.
+  blokir: 20, larang: 25, retas: 30, sita: 22, bobol: 25,
+  // Frasa bentuk aktif. Judul Indonesia sering memakai "Cabut Izin" dan
+  // "Gagal Bayar" tanpa awalan di-, sehingga bentuk pasifnya saja tidak cukup.
+  'cabut izin': 25, 'gagal bayar': 22, 'aksi jual': 20, 'tekanan jual': 18,
 };
 
 const POSITIVE_TERMS: Record<string, number> = {
@@ -42,6 +64,14 @@ const POSITIVE_TERMS: Record<string, number> = {
   institutional: 12, custody: 10, listing: 16, listed: 14,
   dovish: 16, 'rate cut': 20, easing: 14, stimulus: 16, 'risk-on': 18,
   buyback: 14, staking: 8, dividend: 8,
+
+  // --- Bahasa Indonesia ---
+  melonjak: 18, menguat: 14, meroket: 20, reli: 16, bangkit: 12,
+  pemulihan: 14, terobosan: 14, lonjakan: 16, menanjak: 12, naik: 10,
+  disetujui: 22, persetujuan: 22, direstui: 20, dilegalkan: 18, diizinkan: 18,
+  diluncurkan: 10, peluncuran: 10, kemitraan: 12, adopsi: 16, insentif: 12,
+  keuntungan: 10, untung: 10, cuan: 12, tumbuh: 10, bertumbuh: 10,
+  'rekor tertinggi': 20, 'suku bunga dipangkas': 20, 'aliran masuk': 16,
 };
 
 /**
@@ -76,7 +106,12 @@ export const SENTIMENT_DICTIONARY_KEYS = (): string[] => [
  * negatif. Pembalikan hanya berlaku dalam jarak beberapa kata — di luar itu
  * kaitannya terlalu lemah untuk diandalkan.
  */
-const NEGATORS = ['no', 'not', 'never', 'without', 'denies', 'denied', 'deny', 'dismisses', 'dismissed', 'avoids', 'halts'];
+const NEGATORS = [
+  'no', 'not', 'never', 'without', 'denies', 'denied', 'deny', 'dismisses', 'dismissed', 'avoids', 'halts',
+  // Negasi Bahasa Indonesia. Tanpa ini "Bitcoin Tidak Anjlok" dinilai
+  // negatif, padahal artinya justru kebalikannya.
+  'tidak', 'tak', 'bukan', 'belum', 'tanpa', 'batal', 'membantah', 'dibantah',
+];
 const NEGATION_WINDOW = 3;
 
 /** Kata yang menandakan berita berdampak besar, lepas dari arahnya. */

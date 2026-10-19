@@ -143,7 +143,96 @@ export const DEFAULT_NEWS_SOURCES: NewsSource[] = [
     tier: 2,
     enabled: true,
   },
+  {
+    id: 'theblock',
+    label: 'The Block',
+    url: 'https://www.theblock.co/rss.xml',
+    category: 'CRYPTO',
+    tier: 1,
+    enabled: true,
+  },
+  {
+    id: 'blockworks',
+    label: 'Blockworks',
+    url: 'https://blockworks.co/feed',
+    category: 'CRYPTO',
+    tier: 2,
+    enabled: true,
+  },
+  {
+    /**
+     * Peristiwa bursa — temuan paling berharga dari pengujian sumber.
+     *
+     * Kueri ini memakai kata KEJADIAN, bukan nama koin, dan itu yang membuat
+     * bedanya: ia mengembalikan "Binance Delisting Knocks 2 Altcoins Down 10%"
+     * dan "Binance delisting sends QUICK down 20%" -- peristiwa yang bisa
+     * menghabisi posisi memecoin dalam hitungan menit, dan tidak terdeteksi
+     * oleh indikator teknikal mana pun sebelum harganya sudah jatuh.
+     */
+    id: 'gnews-exchange',
+    label: 'Google News — Peristiwa Bursa',
+    url:
+      'https://news.google.com/rss/search?q=' +
+      encodeURIComponent(
+        '(Binance OR Coinbase OR Indodax) (listing OR delisting OR halt OR suspend OR hack) when:2d',
+      ) +
+      '&hl=en-US&gl=US&ceid=US:en',
+    category: 'CRYPTO',
+    tier: 1,
+    enabled: true,
+  },
+  {
+    /**
+     * Kebijakan kripto Indonesia.
+     *
+     * Bot ini berdagang di Indodax, dan keputusan Bappebti/OJK nyaris tidak
+     * pernah muncul di feed berbahasa Inggris. Kuerinya MEWAJIBKAN frasa
+     * "aset kripto": versi yang hanya memakai kata OJK mengembalikan empat
+     * berita berturut-turut tentang pencabutan izin perusahaan modal ventura
+     * -- cocok katanya, salah topiknya.
+     *
+     * Sumber ini baru berguna setelah kamus Bahasa Indonesia ditambahkan;
+     * sebelumnya seluruh judulnya dinilai netral.
+     */
+    id: 'gnews-id',
+    label: 'Google News — Kripto Indonesia',
+    url:
+      'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('"aset kripto" (aturan OR izin OR pajak OR larangan OR bursa) when:7d') +
+      '&hl=id&gl=ID&ceid=ID:id',
+    category: 'REGULATION',
+    tier: 2,
+    enabled: true,
+  },
 ];
+
+/**
+ * Sumber yang SUDAH DIUJI dan SENGAJA tidak dipakai, beserta alasannya.
+ *
+ * Diukur lewat RssClient bot sendiri pada 2026-10-14. Dicatat supaya tidak
+ * ditambahkan kembali oleh orang yang menganggapnya terlewat:
+ *
+ *   cryptoslate       — HTTP 403, menolak permintaan kita.
+ *   coingape          — HTTP 403.
+ *   bitcoinmagazine   — tidak membalas sama sekali (timeout).
+ *   u.today           — hidup, 98 item, tetapi isinya "Price Prediction" dan
+ *                       kabar whale. Judul begini dinilai kamus seolah punya
+ *                       arah, padahal tidak memuat peristiwa apa pun.
+ *   decrypt           — hidup, 33 item, tetapi dua teratas tentang OpenAI dan
+ *                       Character.AI. Decrypt meliput AI sebanyak kripto.
+ *   gnews-memecoin    — hidup, 100 item, nyaris seluruhnya laman harga dan
+ *                       iklan: "Hunter Biden's Laptop price today", "Your
+ *                       Easiest Way to Crypto". Nama koin sebagai kueri
+ *                       menarik konten SEO, bukan kabar.
+ */
+export const REJECTED_NEWS_SOURCES = [
+  'cryptoslate',
+  'coingape',
+  'bitcoinmagazine',
+  'u.today',
+  'decrypt',
+  'gnews-memecoin',
+] as const;
 
 /** Templat kueri untuk berita satu koin. `%s` diganti nama koin. */
 export const COIN_QUERY_TEMPLATE =

@@ -8,6 +8,7 @@ import { TradeConfirmService } from './trade-confirm.service';
 import { SignalScannerService } from '../market-intelligence/scanner/signal-scanner.service';
 import { RiskService } from '../trading/risk.service';
 import { BotConfigService } from '../config/bot-config.service';
+import { TradingUniverseService } from '../config/trading-universe.service';
 import { IndodaxService } from '../indodax/indodax.service';
 import { fmtPrice, idr } from '../common/num';
 
@@ -41,6 +42,7 @@ export class OpportunityWatcherService {
     private readonly scanner: SignalScannerService,
     private readonly risk: RiskService,
     private readonly config: BotConfigService,
+    private readonly universe: TradingUniverseService,
     private readonly indodax: IndodaxService,
   ) {}
 
@@ -68,7 +70,31 @@ export class OpportunityWatcherService {
   }
 
   /** Dipakai juga oleh perintah Telegram untuk memeriksa sekarang. */
-  async findAndOffer(): Promise<{ offered: string[]; considered: number; skipped: string[] }> {
+  async findAndOffer(): Promise<{
+    offered: string[];
+    considered: number;
+    skipped: string[];
+    /**
+     * Rincian corong penyaring, dilaporkan terpisah karena TINDAKANNYA beda.
+     *
+     * Satu angka "considered" tidak bisa menjelaskan apa pun. Pada 16 Okt 2026
+     * operator melihat satu menu menampilkan STRKIDR berskor 70 sementara
+     * /peluang berkata "Lolos ambang skor: 0 pair" dengan ambang 70 — dua
+     * pernyataan yang tidak mungkin sama-sama benar. Sebabnya: angka itu
+     * dihitung SETELAH penyaring keputusan, padahal labelnya menyebut skor.
+     *
+     *   lolos SKOR saja     -> setupnya kuat, tetapi ada aturan yang menolak
+     *   lolos KEPUTUSAN saja-> tidak ada blocker, tetapi kualitasnya kurang
+     *   lolos KEDUANYA      -> baru inilah yang ditawarkan
+     */
+    funnel: {
+      totalHits: number;
+      passedScore: number;
+      passedDecision: number;
+      passedBoth: number;
+      minScore: number;
+    };
+  }> {
     const params = this.config.params();
     const skipped: string[] = [];
 
@@ -80,10 +106,31 @@ export class OpportunityWatcherService {
         offered: [],
         considered: 0,
         skipped: [`kill switch aktif: ${kill.reasons.join('; ')}`],
+        funnel: {
+          totalHits: 0,
+          passedScore: 0,
+          passedDecision: 0,
+          passedBoth: 0,
+          minScore: params.opportunityMinScore,
+        },
       };
     }
 
-    const result = await this.scanner.scan({ direction: 'LONG' });
+    /**
+     * Pemindaian dibatasi pada TRADING_PAIRS bila daftarnya DISETEL EKSPLISIT.
+     *
+     * Sebelumnya pengawas selalu memindai seluruh pasar. Akibatnya nyata: pada
+     * 2026-10-09 ia menawarkan MUBARAKIDR padahal operator sudah menyetel
+     * `TRADING_PAIRS=fartcoinidr,dogeidr` berdasarkan hasil backtest. MUBARAK
+     * memang likuid, tetapi tidak pernah diuji sama sekali — dan ordernya
+     * gagal karena presisi kuantitas yang hanya diketahui setelah dicoba.
+     *
+     * Menyetel daftar pair secara eksplisit adalah keputusan sadar untuk
+     * membatasi diri pada yang sudah diperiksa. Pengawas harus menghormatinya.
+     * Dengan `TRADING_PAIRS=auto`, pemindaian tetap mencakup seluruh pasar.
+     */
+    const explicitPairs = this.universe.isAuto ? undefined : this.config.params().tradingPairs;
+    const result = await this.scanner.scan({ direction: 'LONG', pairs: explicitPairs });
 
     const open = await this.trades.find({
       where: { status: In(['OPEN', 'CLOSING']) },
@@ -107,6 +154,16 @@ export class OpportunityWatcherService {
     const candidates = tradeable
       .filter((h) => h.score >= params.opportunityMinScore)
       .sort((a, b) => b.score - a.score);
+
+    // Dihitung dari kumpulan hit YANG SAMA supaya tiap angka bisa
+    // dipertanggungjawabkan terhadap yang lain.
+    const funnel = {
+      totalHits: result.hits.length,
+      passedScore: result.hits.filter((h) => h.score >= params.opportunityMinScore).length,
+      passedDecision: tradeable.length,
+      passedBoth: candidates.length,
+      minScore: params.opportunityMinScore,
+    };
 
     if (!candidates.length) {
       // Dibedakan dengan jelas: tidak ada setup sama sekali adalah keadaan
@@ -153,7 +210,72 @@ export class OpportunityWatcherService {
       this.logger.log(`Peluang ditawarkan: ${pair.toUpperCase()} skor ${hit.score}`);
     }
 
-    return { offered, considered: candidates.length, skipped };
+    return { offered, considered: candidates.length, skipped, funnel };
+  }
+
+  /**
+   * Kandidat untuk dashboard, TANPA mengirim tawaran apa pun.
+   *
+   * Dipisah dari `findAndOffer` dengan sengaja: dashboard dipanggil manual oleh
+   * operator dan harus menampilkan keadaan apa adanya, termasuk pair yang
+   * sedang dalam masa tenang atau yang tidak terjangkau. Memakai jalur
+   * penawaran akan menyembunyikan justru yang ingin dilihat.
+   */
+  async scanForDashboard(): Promise<{
+    candidates: Array<{ pair: string; score: number; decision: string; atrPercent: number | null }>;
+    scanned: number;
+  }> {
+    const explicitPairs = this.universe.isAuto ? undefined : this.config.params().tradingPairs;
+    const result = await this.scanner.scan({ direction: 'LONG', pairs: explicitPairs });
+
+    const atrByPair = new Map<string, number | null>(
+      (result.overview ?? []).map((o) => [o.pair.toLowerCase(), o.atrPercent ?? null]),
+    );
+
+    // Satu baris per pair: hit yang sama bisa muncul beberapa kali untuk
+    // timeframe berbeda, dan dashboard hanya perlu yang skornya tertinggi.
+    const best = new Map<string, { pair: string; score: number; decision: string }>();
+    for (const h of result.hits ?? []) {
+      const key = h.pair.toLowerCase();
+      const prev = best.get(key);
+      if (!prev || h.score > prev.score) {
+        best.set(key, { pair: key, score: h.score, decision: h.decision });
+      }
+    }
+
+    // Pair tanpa hit tetap disertakan dari overview: operator perlu melihat
+    // bahwa pair-nya DIPINDAI tetapi tidak lolos, bukan hilang begitu saja.
+    for (const o of result.overview ?? []) {
+      const key = o.pair.toLowerCase();
+      if (!best.has(key)) {
+        best.set(key, { pair: key, score: o.score, decision: o.decision });
+      }
+    }
+
+    const candidates = [...best.values()]
+      .map((b) => ({ ...b, atrPercent: atrByPair.get(b.pair) ?? null }))
+      .sort((a, b) => b.score - a.score);
+
+    return { candidates, scanned: result.pairsScanned ?? candidates.length };
+  }
+
+  /**
+   * Kirim tawaran untuk satu pair sekarang, melewati masa tenang.
+   *
+   * Dipakai dashboard: operator yang meminta dashboard secara eksplisit sedang
+   * meminta kartunya, jadi masa tenang yang berguna untuk cron justru
+   * menghalangi di sini. Masa tenangnya tetap DICATAT agar cron tidak
+   * mengulanginya beberapa menit kemudian.
+   */
+  async offerNow(pair: string, score: number): Promise<boolean> {
+    const plan = await this.buildPlan(pair, score);
+    if (plan.ok !== true) {
+      this.logger.debug(`Tawaran ${pair} dilewati: ${plan.reason}`);
+      return false;
+    }
+    await this.tradeConfirm.offer(pair, plan.message);
+    this.lastOffered.set(pair, Date.now());
+    return true;
   }
 
   /**

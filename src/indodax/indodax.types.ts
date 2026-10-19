@@ -53,3 +53,25 @@ export interface OrderBook {
   buy: number[][];  // [price, amount]
   sell: number[][];
 }
+
+/**
+ * Satu baris ringkasan pasar dari `/api/summaries`.
+ *
+ * `bid`, `ask`, dan `spreadPercent` sengaja disertakan: endpoint itu sudah
+ * mengembalikannya untuk SELURUH pair dalam satu respons. Versi sebelumnya
+ * membuangnya, sehingga penyaringan spread terlihat mahal — seolah menuntut
+ * satu panggilan ticker per pair — padahal datanya sudah ada tanpa biaya
+ * tambahan. Akibatnya pair ber-spread 11% lolos penyaringan dan baru ditolak
+ * jauh di belakang, atau tidak ditolak sama sekali saat backtest (yang tidak
+ * punya data order book).
+ */
+export interface MarketSummaryRow {
+  pair: string;
+  last: number;
+  bid: number | null;
+  ask: number | null;
+  /** Null bila bid/ask tidak terbaca — BUKAN nol, yang berarti spread sempurna. */
+  spreadPercent: number | null;
+  volumeIdr: number;
+  change24h: number;
+}

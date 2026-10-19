@@ -413,6 +413,31 @@ export class TradingService {
 
   // ─── Buka posisi ──────────────────────────────────────────────────────────
 
+  /**
+   * Sebab kegagalan entry terakhir per pair.
+   *
+   * `openPosition` mengembalikan boolean, dan dua keadaan yang sangat berbeda
+   * sama-sama menghasilkan `false`: order maker yang tidak tersentuh harga
+   * (normal, tanpa biaya) dan penolakan exchange yang sungguhan. Jalur manual
+   * karena itu melaporkan keduanya sebagai "Order tidak tereksekusi — periksa
+   * log", yang terbaca seperti kerusakan padahal biasanya bukan.
+   *
+   * Operator yang menekan CONFIRM berhak tahu mana yang terjadi.
+   */
+  /**
+   * Kegagalan entry terakhir per pair.
+   *
+   * `reachedExchange` menentukan apa yang boleh ditampilkan kartu progres.
+   * Tanpa penanda ini kartu menampilkan "Mengirim ke Indodax" sebagai TERCAPAI
+   * pada setiap kegagalan - termasuk penolakan yang terjadi sebelum satu byte
+   * pun dikirim. Operator lalu mencari masalah di bursa, padahal ordernya
+   * tidak pernah ada di sana.
+   */
+  private readonly lastEntryFailure = new Map<
+    string,
+    { missed: boolean; reason: string; reachedExchange: boolean }
+  >();
+
   private async openPosition(
     pair: string,
     price: number,
@@ -432,6 +457,13 @@ export class TradingService {
     const signalRef = buildSignalRef(pair, strategyName, barTime);
 
     if (this.inFlightEntries.has(signalRef)) {
+      // Sebab dicatat agar pesan ke operator menyebut keadaan sebenarnya,
+      // bukan "periksa log". Menekan tombol dua kali adalah hal yang wajar.
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason: 'order untuk sinyal yang sama sedang diproses - tunggu beberapa detik',
+        reachedExchange: false,
+      });
       this.logger.warn(`Entry ${pair.toUpperCase()} untuk sinyal ${signalRef} sedang diproses - dilewati`);
       return false;
     }
@@ -441,6 +473,13 @@ export class TradingService {
       this.logger.warn(
         `Sinyal ${signalRef} sudah menghasilkan trade #${duplicate.id} (${duplicate.status}) - order ganda dicegah`,
       );
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason:
+          `sinyal ini sudah menghasilkan trade #${duplicate.id} (${duplicate.status}). ` +
+          'Satu sinyal hanya boleh dieksekusi sekali - tunggu candle berikutnya',
+        reachedExchange: false,
+      });
       await this.audit.log({
         category: 'ORDER',
         event: 'DUPLICATE_ENTRY_BLOCKED',
@@ -475,6 +514,25 @@ export class TradingService {
     );
 
     if (!decision.allowed) {
+      /**
+       * Sebab penolakan WAJIB dicatat, bukan hanya di-audit.
+       *
+       * `openManualPosition` membaca `lastEntryFailure` untuk menyusun pesan
+       * ke operator. Sebelum ini, jalur risk engine hanya menulis ke log dan
+       * tabel audit lalu mengembalikan false - sehingga operator menerima
+       * "Order tidak tereksekusi - periksa log" padahal sebabnya sudah
+       * diketahui persis.
+       *
+       * Diukur pada kasus nyata: ZEREBROIDR ditolak dengan "Jarak stop 7.18%
+       * melebihi batas 6%", tetapi kartu Telegram hanya menampilkan "periksa
+       * log". Operator menyimpulkan ada kerusakan, padahal aturannya bekerja
+       * sebagaimana mestinya.
+       */
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason: decision.reason ?? 'ditolak risk engine tanpa sebab tercatat',
+        reachedExchange: false,
+      });
       this.logger.log(`Risiko menolak BUY ${pair}: ${decision.reason}`);
       await this.audit.log({
         category: 'RISK',
@@ -526,6 +584,12 @@ export class TradingService {
       // Order maker yang tidak tersentuh harga bukan kegagalan — peluang lewat,
       // tidak ada biaya, dan tidak perlu mengganggu operator dengan alarm.
       if (outcome.missed) {
+        this.lastEntryFailure.set(pair.toLowerCase(), {
+          missed: true,
+          reason: outcome.error ?? 'limit maker tidak tersentuh harga',
+          // Limit maker memang DIKIRIM, hanya tidak tersentuh harga.
+          reachedExchange: true,
+        });
         this.logger.log(`Entry maker ${pair.toUpperCase()} tidak terisi - peluang dilewat`);
         await this.audit.log({
           category: 'ORDER',
@@ -536,6 +600,11 @@ export class TradingService {
         return false;
       }
 
+      this.lastEntryFailure.set(pair.toLowerCase(), {
+        missed: false,
+        reason: outcome.error ?? 'tidak terisi',
+        reachedExchange: true,
+      });
       this.logger.error(`BUY ${pair} tidak tereksekusi: ${outcome.error}`);
       await this.notification.sendAlert(
         `Order BUY ${pair.toUpperCase()} gagal: ${outcome.error ?? 'tidak terisi'}`,
@@ -1158,7 +1227,37 @@ export class TradingService {
   async openManualPosition(
     pair: string,
     reason = 'MANUAL',
-  ): Promise<{ success: boolean; message: string }> {
+    /**
+     * Harga acuan dari pemanggil, bila ada.
+     *
+     * Tanpa ini jalur manual memakai `candles[last].close` — penutupan bar
+     * TERTUTUP terakhir, yang pada timeframe 60 menit bisa berumur hampir
+     * satu jam. Operator menekan CONFIRM setelah melihat harga HIDUP, jadi
+     * memesan berdasarkan harga sejam lalu membuat ukuran posisi, stop, dan
+     * target meleset dari yang ditampilkan.
+     */
+    executionPrice?: number,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    /**
+     * True bila limit maker hanya tidak tersentuh harga.
+     *
+     * Dibedakan dari kegagalan karena konsekuensinya berbeda: tidak ada uang
+     * terpakai, ordernya sudah dibatalkan, dan tidak ada yang perlu diperiksa.
+     * Menampilkannya dengan tanda gagal membuat operator mencari kerusakan
+     * yang tidak ada.
+     */
+    missed?: boolean;
+    /**
+     * True bila order benar-benar sudah dikirim ke Indodax.
+     *
+     * Dipakai kartu progres untuk menentukan tahap mana yang boleh ditandai
+     * tercapai. Penolakan aturan terjadi SEBELUM pengiriman, dan menampilkannya
+     * sebagai "sudah dikirim" membuat operator mencari masalah di bursa.
+     */
+    reachedExchange?: boolean;
+  }> {
     const params = this.config.params();
     const strategy = this.strategies.active();
 
@@ -1191,7 +1290,10 @@ export class TradingService {
       hasOpenPosition: false,
     });
 
-    const price = candles[candles.length - 1].close;
+    const price =
+      executionPrice && executionPrice > 0
+        ? executionPrice
+        : candles[candles.length - 1].close;
 
     /**
      * Zona entry sengaja DILEPAS pada jalur manual: operator menekan tombol
@@ -1207,10 +1309,47 @@ export class TradingService {
       reasons: [`Dibuka manual (${reason})`, ...signal.reasons.slice(0, 3)],
     };
 
+    this.lastEntryFailure.delete(pair.toLowerCase());
     const opened = await this.openPosition(pair, price, manualSignal, strategy.name);
-    return opened
-      ? { success: true, message: `Posisi ${pair.toUpperCase()} dibuka @ ${fmtPrice(price)}` }
-      : { success: false, message: 'Order tidak tereksekusi — periksa log' };
+
+    if (opened) {
+      return { success: true, message: `Posisi ${pair.toUpperCase()} dibuka @ ${fmtPrice(price)}` };
+    }
+
+    const failure = this.lastEntryFailure.get(pair.toLowerCase());
+
+    // Order maker yang tidak terisi BUKAN kegagalan: tidak ada uang terpakai,
+    // ordernya sudah dibatalkan, dan peluangnya hanya lewat. Melaporkannya
+    // dengan tanda ❌ dan "periksa log" membuat operator mencari kerusakan
+    // yang tidak ada.
+    if (failure?.missed) {
+      const timeout = this.config.params().makerFillTimeoutSeconds;
+      return {
+        success: false,
+        missed: true,
+        reachedExchange: true,
+        message: [
+          `${pair.toUpperCase()} — limit maker tidak terisi dalam ${timeout} detik.`,
+          '',
+          'Tidak ada uang terpakai; ordernya sudah dibatalkan otomatis.',
+          'Harga tidak turun ke level limit, jadi peluangnya lewat.',
+          '',
+          '_Setel MAKER_ENTRY=false bila ingin langsung dieksekusi di harga_',
+          '_pasar dengan fee taker 0,2% (dua kali fee maker)._',
+        ].join('\n'),
+      };
+    }
+
+    return {
+      success: false,
+      // Tanpa catatan kegagalan, anggap order BELUM sampai bursa: itu
+      // kemungkinan yang lebih besar, dan salah ke arah ini hanya membuat
+      // kartu kurang mengklaim - bukan mengklaim yang tidak terjadi.
+      reachedExchange: failure?.reachedExchange ?? false,
+      message: failure?.reason
+        ? `${pair.toUpperCase()} ditolak: ${failure.reason}`
+        : 'Order tidak tereksekusi — periksa log',
+    };
   }
 
   /** Tutup manual dari dashboard atau perintah Telegram. */
@@ -1252,8 +1391,29 @@ export class TradingService {
     return this.tradeRepo.find({ where: { status: 'FAILED' }, order: { updatedAt: 'DESC' } });
   }
 
-  async getTradeHistory(limit = 50): Promise<Trade[]> {
-    return this.tradeRepo.find({ order: { createdAt: 'DESC' }, take: limit });
+  /**
+   * Riwayat trade MODE SEKARANG saja.
+   *
+   * Dulu mengembalikan semua mode tercampur. Itu berbahaya justru ketika
+   * lapisan ini paling berguna: begitu mode simulasi dinyalakan untuk
+   * mengumpulkan sampel, trade simulasi akan bercampur dengan trade LIVE
+   * sungguhan di dalam konteks /ask dan di laporan performa — dan operator
+   * tidak punya cara membedakannya.
+   *
+   * `getPerformanceSummary` sudah menyaring per mode sejak awal; perbedaan
+   * keduanya adalah bentuk ketidaksinkronan yang sama dengan /peluang vs
+   * menu skor. Dua fungsi yang menjawab pertanyaan sama harus memakai
+   * penyaring sama.
+   *
+   * `allModes` disediakan untuk pemanggil yang memang ingin melihat keduanya
+   * (mis. audit), dan harus menyatakannya secara eksplisit.
+   */
+  async getTradeHistory(limit = 50, allModes = false): Promise<Trade[]> {
+    return this.tradeRepo.find({
+      where: allModes ? {} : { mode: this.config.mode },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
   }
 
   /**

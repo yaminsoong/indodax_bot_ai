@@ -7,7 +7,15 @@ import { RateLimiter, withRetry, isTransientError } from '../common/rate-limiter
 import { PairRegistryService, PairInfo } from './pair-registry.service';
 import { IndodaxV2Client, IndodaxV2Error } from './indodax-v2.client';
 import { resolveTradingMode } from '../common/live-mode';
-import { Balance, Candle, OrderBook, OrderFill, OrderResult, Ticker } from './indodax.types';
+import {
+  Balance,
+  Candle,
+  MarketSummaryRow,
+  OrderBook,
+  OrderFill,
+  OrderResult,
+  Ticker,
+} from './indodax.types';
 
 export * from './indodax.types';
 
@@ -180,11 +188,9 @@ export class IndodaxService {
   }
 
   /** Ringkasan seluruh pair IDR dengan change 24h yang benar. */
-  async getMarketSummary(): Promise<
-    Array<{ pair: string; last: number; volumeIdr: number; change24h: number }>
-  > {
+  async getMarketSummary(): Promise<MarketSummaryRow[]> {
     await this.loadSummaries();
-    const out: Array<{ pair: string; last: number; volumeIdr: number; change24h: number }> = [];
+    const out: MarketSummaryRow[] = [];
 
     for (const [tickerId, t] of Object.entries<any>(this.summariesCache.tickers)) {
       const pair = tickerId.replace('_', '');
@@ -193,15 +199,48 @@ export class IndodaxService {
       const last = parseFloat(t.last);
       if (!Number.isFinite(last) || last <= 0) continue;
 
+      // Bid dan ask IKUT dikembalikan. `/api/summaries` sudah memuatnya untuk
+      // SELURUH pair dalam satu respons — membuangnya di sini membuat
+      // penyaringan spread tampak mahal (satu panggilan ticker per pair)
+      // padahal datanya sudah ada di tangan tanpa biaya tambahan.
+      const bid = parseFloat(t.buy);
+      const ask = parseFloat(t.sell);
+      const spreadPercent =
+        Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 ? ((ask - bid) / bid) * 100 : null;
+
       const past = this.summariesCache.prices24h[pair];
       out.push({
         pair,
         last,
+        bid: Number.isFinite(bid) ? bid : null,
+        ask: Number.isFinite(ask) ? ask : null,
+        spreadPercent,
         volumeIdr: parseFloat(t.vol_idr ?? 0),
         change24h: past > 0 ? ((last - past) / past) * 100 : 0,
       });
     }
     return out;
+  }
+
+  /**
+   * Spread terakhir sebuah pair dari cache ringkasan pasar, atau null.
+   *
+   * TIDAK memicu permintaan jaringan: ia hanya membaca cache yang sudah diisi
+   * `loadSummaries()`. Itu membuatnya aman dipanggil dari jalur evaluasi risiko
+   * yang berjalan pada setiap sinyal.
+   *
+   * Mengembalikan null bila cache belum terisi atau pair tidak ada — dan null
+   * HARUS diperlakukan sebagai "tidak diketahui", bukan sebagai spread nol.
+   */
+  getCachedSpreadPercent(pair: string): number | null {
+    const t = this.summariesCache?.tickers?.[pair.replace(/^([a-z0-9]+)(idr)$/, '$1_$2')];
+    if (!t) return null;
+
+    const bid = parseFloat(t.buy);
+    const ask = parseFloat(t.sell);
+    if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0) return null;
+
+    return ((ask - bid) / bid) * 100;
   }
 
   /**
@@ -362,9 +401,26 @@ export class IndodaxService {
     return crypto.createHmac('sha512', secret).update(postData).digest('hex');
   }
 
-  /** Nonce monotonik — tidak pernah mengulang nilai walau dipanggil beruntun. */
+  /**
+   * Nonce monotonik, DIKOREKSI terhadap jam server Indodax.
+   *
+   * Nonce di TAPI lama dipakai sekaligus sebagai `timestamp`, sehingga jam
+   * mesin yang meleset membuat seluruh panggilan privat ditolak dengan
+   * "Invalid timestamp". Diukur 2026-10-14: jam mesin ini 183 DETIK
+   * tertinggal dari server Indodax, dan 20 galat `Invalid timestamp` muncul
+   * di log hari itu.
+   *
+   * Klien v2 sudah mengoreksinya lewat `clockOffsetMs`; jalur lama TIDAK,
+   * dan memakai `Date.now()` mentah. Offset yang sama dipakai di sini supaya
+   * kedua protokol tahan terhadap jam yang meleset — bot yang memegang uang
+   * tidak boleh bergantung pada kerapian jam mesin yang menjalankannya.
+   *
+   * `getClockOffsetMs()` bersifat sinkron dan mengembalikan hasil sinkronisasi
+   * terakhir; nol bila belum pernah sinkron, yang berarti perilakunya sama
+   * seperti sebelumnya.
+   */
   private nextNonce(): string {
-    const now = Date.now();
+    const now = Date.now() + this.v2.getClockOffsetMs();
     this.lastNonce = now > this.lastNonce ? now : this.lastNonce + 1;
     return String(this.lastNonce);
   }
@@ -395,6 +451,16 @@ export class IndodaxService {
     return this.privateMutex.runExclusive(async () => {
       const attempt = async () => {
         await this.privateLimiter.acquire();
+        /**
+         * Pastikan offset jam sudah terukur sebelum nonce dibentuk.
+         *
+         * Di-cache 15 menit di dalam `syncClock`, jadi ini bukan permintaan
+         * jaringan tambahan pada panggilan biasa. Kegagalannya diabaikan
+         * dengan sengaja: offset nol hanya berarti kembali ke perilaku lama,
+         * sedangkan melempar di sini akan mematikan panggilan yang mungkin
+         * tetap berhasil.
+         */
+        await this.v2.syncClock().catch(() => undefined);
         const nonce = this.nextNonce();
         const postData = new URLSearchParams({
           method,
@@ -416,6 +482,20 @@ export class IndodaxService {
         if (res.data?.success !== 1) {
           const err: any = new Error(res.data?.error || `Indodax API error (${method})`);
           err.indodaxCode = res.data?.error_code;
+
+          /**
+           * Timestamp ditolak: paksa sinkronisasi ulang sebelum percobaan
+           * berikutnya, seperti yang sudah dilakukan klien v2.
+           *
+           * Tanpa ini, offset yang di-cache 15 menit membuat SETIAP panggilan
+           * privat dalam jendela itu gagal dengan sebab yang sama — persis
+           * pola 20 galat beruntun pada 14 Okt.
+           */
+          if (/invalid timestamp/i.test(String(err.message))) {
+            this.logger.warn('Timestamp ditolak TAPI lama — menyinkronkan ulang jam');
+            await this.v2.syncClock(true).catch(() => undefined);
+            err.retryable = true;
+          }
           throw err;
         }
         return res.data.return;
@@ -424,7 +504,9 @@ export class IndodaxService {
       return retries > 0
         ? withRetry(attempt, {
             retries,
-            retryable: isTransientError,
+            // Galat timestamp layak diulang karena jam baru saja disinkronkan
+            // ulang tepat sebelum galat itu dilempar.
+            retryable: (e) => isTransientError(e) || (e as any)?.retryable === true,
             onRetry: (a, e) => this.logger.warn(`Retry ${method} #${a}: ${e.message}`),
           })
         : attempt();
@@ -588,29 +670,51 @@ export class IndodaxService {
     const key = pair.toLowerCase();
 
     let normPrice: number;
+    let normQty: number;
+    let effectiveIdr: number;
     try {
       normPrice = this.pairs.normalizePrice(key, price);
-      const check = this.pairs.validateOrder(key, 'buy', normPrice, idrAmount, idrAmount / normPrice);
+
+      /**
+       * Kuantitas dibulatkan LEBIH DULU, lalu divalidasi.
+       *
+       * Urutan ini penting dan sebelumnya terbalik: validasi berjalan pada
+       * kuantitas mentah, baru setelah lolos kuantitasnya dipotong ke presisi
+       * pair. Pemotongan itu bisa menjatuhkan nilainya di bawah minimum, dan
+       * order yang sudah dinyatakan sah lalu ditolak exchange.
+       *
+       * MUBARAKIDR (presisi 0, harga 1372, minimum Rp10.000):
+       *   anggaran Rp10.100 -> qty 7,3615 -> dipotong jadi 7 -> Rp9.604
+       *   validasi lama: LOLOS. Indodax: DITOLAK.
+       *
+       * Nilai IDR yang divalidasi juga diturunkan dari kuantitas yang sudah
+       * dibulatkan, bukan dari anggaran asli — itulah nilai order sebenarnya.
+       */
+      normQty = this.pairs.normalizeCoinAmount(key, idrAmount / normPrice);
+      effectiveIdr = normQty * normPrice;
+
+      const check = this.pairs.validateOrder(key, 'buy', normPrice, effectiveIdr, normQty);
       if (!check.ok) return { success: false, error: check.reason };
     } catch (err) {
       return { success: false, error: err.message };
     }
 
     if (!this.isLive) {
-      this.logger.log(`[SIMULASI] BUY ${key} @ ${normPrice} — ${Math.round(idrAmount)} IDR`);
+      this.logger.log(
+        `[SIMULASI] BUY ${key} @ ${normPrice} — ${Math.round(effectiveIdr)} IDR (${normQty})`,
+      );
       return { success: true, orderId: `SIM-${Date.now()}`, data: { simulated: true } };
     }
 
     try {
       if ((await this.resolveApiVersion()) === 'v2') {
         // TAPIv2 selalu meminta kuantitas aset dasar, bukan nilai IDR.
-        // Konversi dibulatkan ke presisi pair di sini, satu kali.
-        const qty = this.pairs.normalizeCoinAmount(key, idrAmount / normPrice);
+        // Kuantitas sudah dibulatkan dan divalidasi di atas; dipakai apa adanya.
         const order = await this.v2.placeLimitOrder(
           key,
           'BUY',
           this.pairs.formatPrice(key, normPrice),
-          this.pairs.formatCoinAmount(key, qty),
+          this.pairs.formatCoinAmount(key, normQty),
         );
         return { success: true, orderId: order.orderId, data: order.raw };
       }
@@ -619,7 +723,9 @@ export class IndodaxService {
         pair: key,
         type: 'buy',
         price: this.pairs.formatPrice(key, normPrice),
-        idr: String(Math.floor(idrAmount)),
+        // Diturunkan dari kuantitas yang sudah dibulatkan agar jalur lama dan
+        // v2 memesan jumlah yang sama.
+        idr: String(Math.floor(effectiveIdr)),
       });
       return { success: true, orderId: String(data.order_id), data };
     } catch (err) {

@@ -1,15 +1,28 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { NotificationService } from './notification.service';
 import { ChartBuilderService } from './chart-builder.service';
+import { OrderProgressService, OrderProgressState } from './order-progress.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { TradingService } from '../trading/trading.service';
 import { RiskService } from '../trading/risk.service';
 import { BotConfigService } from '../config/bot-config.service';
 import { MarketIntelligenceService } from '../market-intelligence/market-intelligence.service';
+import { StrategyRegistry } from '../strategy/strategy.registry';
 import { IndodaxService } from '../indodax/indodax.service';
 import { fmtPrice, idr } from '../common/num';
+import { artiKeputusan, artiKondisi } from './plain-language';
 
 interface PendingOrder {
+  /**
+   * Identitas usulan ini.
+   *
+   * Usulan disimpan ber-key pair, jadi menekan BUY dua kali untuk pair yang
+   * sama menimpa yang pertama — sementara KARTU lamanya masih tertera di layar
+   * dengan angka lama. Menekan CONFIRM di kartu itu akan mengeksekusi rencana
+   * yang berbeda dari yang ditampilkan. Id ini dibawa di dalam tombol sehingga
+   * kartu basi dapat dikenali dan ditolak.
+   */
+  id: string;
   pair: string;
   price: number;
   stopLoss: number;
@@ -23,6 +36,15 @@ interface PendingOrder {
 
 /** Usulan kedaluwarsa setelah ini; harga pasar sudah bergerak terlalu jauh. */
 const PENDING_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Pergeseran harga maksimum antara usulan dan konfirmasi.
+ *
+ * Dipasang di bawah jarak stop tersempit yang lazim (sekitar 0,8%) supaya
+ * pergeseran tidak pernah memakan porsi berarti dari ruang risiko sebelum
+ * posisi bahkan dibuka.
+ */
+const MAX_PRICE_DRIFT_PERCENT = 0.5;
 
 /**
  * Tombol Telegram dan konfirmasi dua langkah sebelum order dikirim.
@@ -43,12 +65,14 @@ export class TradeConfirmService implements OnApplicationBootstrap {
   constructor(
     private readonly notification: NotificationService,
     private readonly charts: ChartBuilderService,
+    private readonly progress: OrderProgressService,
     private readonly analysis: AnalysisService,
     private readonly trading: TradingService,
     private readonly risk: RiskService,
     private readonly config: BotConfigService,
     private readonly intelligence: MarketIntelligenceService,
     private readonly indodax: IndodaxService,
+    private readonly strategies: StrategyRegistry,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -136,7 +160,10 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     const plan = this.risk.takeProfitPlan(price, riskPerUnit);
     const riskReward = plan.length ? plan[plan.length - 1].atR : 0;
 
+    const proposalId = Math.random().toString(36).slice(2, 8);
+
     this.pending.set(pair, {
+      id: proposalId,
       pair,
       price,
       stopLoss: decision.stopLossPrice,
@@ -149,37 +176,185 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     });
 
     const text = [
-      `⚠️ *KONFIRMASI ORDER*`,
+      `⚠️ *PERIKSA DULU SEBELUM BELI*`,
       '',
-      `*Pair:* ${pair.toUpperCase()}`,
-      `*Mode:* ${this.config.mode}`,
+      `*Koin:* ${pair.toUpperCase()}`,
+      this.config.mode === 'LIVE'
+        ? '*Uang:* SUNGGUHAN'
+        : '*Uang:* latihan (palsu)',
       '',
-      `*Harga:* Rp ${fmtPrice(price)}`,
-      `*Ukuran:* ${idr(decision.positionSize)} (${decision.quantity.toFixed(8)})`,
-      `*Stop loss:* Rp ${fmtPrice(decision.stopLossPrice)}`,
+      `*Harga sekarang:* Rp ${fmtPrice(price)}`,
+      `*Mau dibelikan:* ${idr(decision.positionSize)}`,
+      `  _dapat ${decision.quantity.toFixed(8)} koin_`,
       '',
-      ...plan.map((l) => `*TP${l.level}:* Rp ${fmtPrice(l.price)} — tutup ${l.closePercent}% (${l.atR}R)`),
+      `*Dijual otomatis kalau rugi,* di Rp ${fmtPrice(decision.stopLossPrice)}`,
+      `  _paling banyak rugi ${idr(decision.riskAmountIdr)}_`,
       '',
-      `*Risiko:* ${idr(decision.riskAmountIdr)}`,
-      `*R:R:* 1 : ${riskReward.toFixed(1)}`,
+      '*Dijual otomatis kalau untung:*',
+      ...plan.map(
+        (l) =>
+          `  Rp ${fmtPrice(l.price)} — jual ${l.closePercent}% dari koinnya`,
+      ),
       '',
-      `_Usulan ini berlaku 5 menit._`,
+      `*Kalau target tercapai, untungnya sekitar ${riskReward.toFixed(1)}x dari yang dipertaruhkan.*`,
+      ...this.explainBlock(price, atr, decision, report),
+      '',
+      `_Tawaran ini berlaku 5 menit. Setelah itu harganya_`,
+      `_sudah berubah dan hitungan di atas tidak berlaku lagi._`,
     ].join('\n');
 
     await this.notification.sendWithButtons(text, [
       [
-        { label: '✅ CONFIRM', data: `confirm:${pair}` },
-        { label: '❌ CANCEL', data: `cancel:${pair}` },
+        { label: '✅ CONFIRM', data: `confirm:${pair}:${proposalId}` },
+        { label: '❌ CANCEL', data: `cancel:${pair}:${proposalId}` },
       ],
     ]);
     return '';
   }
 
+  /**
+   * Bagian "kenapa" dan "dari mana angkanya" pada kartu order.
+   *
+   * Tanpa ini kartu hanya menampilkan hasil: harga, ukuran, stop, risiko.
+   * Operator tidak punya cara menilai apakah angka itu masuk akal, dan ketika
+   * sebuah usulan ditolak ia tidak bisa membedakan "aturannya bekerja" dari
+   * "botnya rusak" - persis kebingungan yang terjadi pada ZEREBROIDR.
+   *
+   * Yang ditampilkan adalah ARITMETIKA yang benar-benar dipakai, bukan
+   * ringkasan terpisah: jarak stop dari ATR, jatah risiko dari persentase
+   * ekuitas, lalu ukuran sebagai hasil bagi keduanya. Angka yang bisa
+   * dihitung ulang dengan tangan adalah angka yang bisa dipercaya.
+   */
+  private explainBlock(
+    price: number,
+    atr: number | undefined,
+    decision: {
+      stopLossPrice: number;
+      positionSize: number;
+      quantity: number;
+      riskAmountIdr: number;
+      initialRiskPerUnit: number;
+    },
+    report: { confluence?: { score?: number; regime?: string; decision?: string }; explanation?: { reasons?: string[]; risks?: string[] } } | null,
+  ): string[] {
+    const params = this.config.params();
+    const out: string[] = [];
+
+    const stopGap = price - decision.stopLossPrice;
+    const stopPercent = price > 0 ? (stopGap / price) * 100 : 0;
+
+        // Nama strategi dari registry; kunci env 'STRATEGY' tidak pernah ada.
+    out.push('', '*— Kenapa koin ini —*', `Cara menilai: ${this.strategies.active().name}`);
+
+    if (report?.confluence) {
+      const c = report.confluence;
+      out.push(
+        `Nilai: ${c.score ?? '-'} dari 100 — ${artiKeputusan(String(c.decision ?? ''))}`,
+        `Keadaan koin ini: ${artiKondisi(String(c.regime ?? ''))}`,
+        // Dinyatakan tegas: nilai ini BUKAN peluang untung. Operator yang
+        // membacanya sebagai probabilitas akan memperbesar posisi pada nilai
+        // tinggi, padahal nilainya tidak pernah menjanjikan itu.
+        '_Nilai 80 BUKAN berarti 80% kemungkinan untung._',
+        '_Itu hanya seberapa rapi polanya menurut aturan bot._',
+      );
+    }
+
+    const reasons = (report?.explanation?.reasons ?? []).slice(0, 4);
+    if (reasons.length) {
+      out.push('', '*— Yang mendukung —*', ...reasons.map((r) => `• ${r}`));
+    }
+
+    const risks = (report?.explanation?.risks ?? []).slice(0, 3);
+    if (risks.length) {
+      out.push('', '*— Yang bisa menggagalkan —*', ...risks.map((r) => `• ${r}`));
+    }
+
+    out.push('', '*— Dari mana angka di atas —*');
+
+    if (atr && atr > 0) {
+      out.push(
+        `1. Koin ini biasa bergerak Rp ${fmtPrice(atr)} per jam`,
+        `   _(${((atr / price) * 100).toFixed(2)}% dari harganya)_`,
+        `   _Batas rugi yang lebih rapat dari ini akan kena oleh_`,
+        `   _gerakan biasa — bukan karena perkiraannya salah._`,
+        `2. Batas rugi dipasang ${params.atrStopMultiplier}x gerakan itu di bawah harga,`,
+        `   jadi Rp ${fmtPrice(decision.stopLossPrice)}`,
+      );
+    } else {
+      out.push(
+        `1. Gerakan khas koin ini tidak terbaca, dipakai batas minimum ${params.minStopPercent}%`,
+        `2. Batas rugi di Rp ${fmtPrice(decision.stopLossPrice)}`,
+      );
+    }
+
+    out.push(
+      `3. Jarak dari harga ke batas rugi: Rp ${fmtPrice(stopGap)} per koin (${stopPercent.toFixed(2)}%)`,
+      `4. Anda bersedia rugi ${params.riskPerTradePercent}% dari total uang = ${idr(decision.riskAmountIdr)}`,
+      `5. Jadi jumlah yang dibeli = ${idr(decision.riskAmountIdr)} ÷ Rp ${fmtPrice(stopGap)}`,
+      `   = ${decision.quantity.toFixed(6)} koin, senilai ${idr(decision.positionSize)}`,
+      '',
+      `*Yang hilang kalau batas rugi kena: ${idr(decision.riskAmountIdr)}.*`,
+      `_Bukan ${idr(decision.positionSize)}. Yang ${idr(decision.positionSize)} itu_`,
+      '_uang yang dibelikan koin, dan koinnya dijual kembali._',
+    );
+
+    /**
+     * Cara kerja stop loss dinyatakan TERANG-TERANGAN.
+     *
+     * Indodax TIDAK menyediakan pembuatan order stop lewat API — docs resmi
+     * hanya mendokumentasikan `limit` dan `market` pada method `trade`; tipe
+     * `stoplimit` hanya muncul di `cancelOrder` dan `openOrders`, jadi hanya
+     * bisa dibuat dari web UI mereka. Karena itu stop di bot ini WAJIB
+     * dipantau sendiri: harga diperiksa tiap menit, lalu order jual pasar
+     * dikirim ketika stop tertembus.
+     *
+     * Akibatnya harus diketahui sebelum menekan CONFIRM, bukan setelah:
+     * selama bot mati atau koneksi terputus, posisi ini TIDAK TERLINDUNGI.
+     * Kata "otomatis" tanpa penjelasan ini membuat operator percaya stopnya
+     * dipegang bursa.
+     */
+    out.push(
+      '',
+      '*— Siapa yang menjaga batas rugi —*',
+      '⚠️ *Bot ini, bukan Indodax.*',
+      '  Indodax tidak menyediakan penjagaan otomatis',
+      '  lewat program. Bot memeriksa harga tiap 1 menit,',
+      '  lalu menjual bila batasnya tertembus.',
+      '',
+      '  *Artinya: kalau bot mati, posisi ini tidak dijaga.*',
+      '  Kalau harga jatuh sangat cepat dalam 1 menit,',
+      '  jualnya juga bisa kebagian harga yang lebih rendah.',
+    );
+
+    return out;
+  }
+
   /** Langkah kedua: eksekusi, setelah memvalidasi ulang. */
-  private async onConfirm(pair: string): Promise<string> {
+  private async onConfirm(arg: string): Promise<string> {
+    // Argumennya berbentuk "pair" (kartu lama) atau "pair:id" (kartu berid).
+    const [pair, proposalId] = arg.split(':');
+
     const order = this.pending.get(pair);
     if (!order) {
       return `Tidak ada usulan aktif untuk ${pair.toUpperCase()}. Tekan BUY lagi.`;
+    }
+
+    /**
+     * Kartu yang sudah digantikan usulan lebih baru ditolak.
+     *
+     * Tanpa pemeriksaan ini, menekan CONFIRM pada kartu lama mengeksekusi
+     * rencana TERBARU sambil menampilkan angka LAMA — operator menyetujui
+     * sesuatu yang berbeda dari yang terjadi.
+     */
+    if (proposalId && order.id && proposalId !== order.id) {
+      return [
+        `⚠️ *${pair.toUpperCase()} — kartu ini sudah digantikan*`,
+        '',
+        'Ada usulan yang lebih baru untuk pair ini, jadi angka di kartu',
+        'ini bukan lagi rencana yang berlaku.',
+        '',
+        '_Pakai kartu terbaru, atau tekan BUY lagi._',
+      ].join('\n');
     }
 
     this.pending.delete(pair);
@@ -191,18 +366,133 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     // Risiko diperiksa ULANG tepat sebelum eksekusi: antara penawaran dan
     // konfirmasi, posisi lain bisa terbuka, kill switch bisa aktif, atau
     // saldo bisa berubah.
-    const recheck = await this.risk.evaluateEntry(pair, order.price, order.stopLoss, order.takeProfit);
+    /**
+     * Harga diambil ULANG, dan seluruh pemeriksaan memakai harga itu.
+     *
+     * Sebelumnya `evaluateEntry` dipanggil dengan `order.price` — harga saat
+     * tombol BUY ditekan, yang bisa berumur lima menit. Lebih jauh lagi,
+     * eksekusinya memakai penutupan bar tertutup terakhir, yang pada timeframe
+     * 60 menit bisa berumur hampir satu jam.
+     *
+     * Jadi ada TIGA harga berbeda dalam satu alur: yang dilihat operator, yang
+     * divalidasi, dan yang dipesan. Untuk uang sungguhan ketiganya harus satu.
+     */
+    const ticker = await this.indodax.getTicker(pair).catch(() => null);
+    if (!ticker?.last) {
+      return `Dibatalkan - harga ${pair.toUpperCase()} tidak terbaca saat konfirmasi.`;
+    }
+
+    const livePrice = ticker.last;
+    const driftPercent = ((livePrice - order.price) / order.price) * 100;
+
+    // Pergeseran melebihi toleransi membatalkan usulan: stop, target, ukuran,
+    // dan risiko rupiah seluruhnya diturunkan dari harga saat usulan dibuat.
+    // Mengeksekusinya berarti memesan sesuatu yang tidak pernah disetujui.
+    if (Math.abs(driftPercent) > MAX_PRICE_DRIFT_PERCENT) {
+      return [
+        `⚠️ *${pair.toUpperCase()} — harga sudah bergerak*`,
+        '',
+        '```',
+        `  saat usulan  Rp ${fmtPrice(order.price)}`,
+        `  sekarang     Rp ${fmtPrice(livePrice)}`,
+        `  selisih      ${driftPercent >= 0 ? '+' : ''}${driftPercent.toFixed(2)}%  (batas ${MAX_PRICE_DRIFT_PERCENT}%)`,
+        '```',
+        'Order dibatalkan. Stop loss, target, dan ukuran posisi dihitung',
+        'dari harga lama, jadi tidak lagi menggambarkan trade ini.',
+        '',
+        '_Tekan BUY lagi untuk perhitungan baru._',
+      ].join('\n');
+    }
+
+    // Stop digeser mengikuti harga baru agar JARAK risikonya tetap sama dengan
+    // yang disetujui operator, bukan jaraknya yang ikut berubah.
+    const stopDistance = order.price - order.stopLoss;
+    const liveStop = livePrice - stopDistance;
+
+    const recheck = await this.risk.evaluateEntry(pair, livePrice, liveStop, 0);
     if (!recheck.allowed) {
       return `❌ Dibatalkan — kondisi berubah sejak usulan dibuat:\n\n${recheck.reason}`;
     }
 
-    const result = await this.trading.openManualPosition(pair, 'TELEGRAM_CONFIRM');
-    return result.success
-      ? `✅ ${result.message}`
-      : `❌ Order ${pair.toUpperCase()} gagal: ${result.message}`;
+    /**
+     * Laporan hidup dibuka SEBELUM order dikirim.
+     *
+     * Order taker diberi waktu 90 detik dan maker sampai 5 menit. Tanpa
+     * laporan ini, selama itu operator hanya melihat diam — dan tidak bisa
+     * membedakan "sedang menunggu" dari "macet".
+     *
+     * Angka yang ditampilkan datang dari usulan yang sudah divalidasi ulang
+     * tepat di atas, jadi ia memang angka yang dipakai order ini.
+     */
+    const base: OrderProgressState = {
+      pair,
+      phase: 'MENGIRIM_ORDER',
+      // Angka dari recheck, bukan usulan lama - inilah yang dipesan.
+      referencePrice: livePrice,
+      positionSizeIdr: recheck.positionSize,
+      riskIdr: recheck.riskAmountIdr,
+      stopLossPrice: recheck.stopLossPrice,
+    };
+
+    const messageId = await this.progress.start(base);
+
+    // Pemanggilan ini memblokir sampai order selesai atau timeout, jadi
+    // pembaruan "menunggu" dijadwalkan terpisah agar laporannya tetap hidup.
+    const timeoutSeconds = this.config.params().makerEntry
+      ? this.config.params().makerFillTimeoutSeconds
+      : this.config.params().orderFillTimeoutSeconds;
+
+    const startedAt = Date.now();
+    const progressTicker = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      const left = Math.max(0, timeoutSeconds - elapsed);
+      // Kegagalan memperbarui laporan TIDAK boleh menggagalkan ordernya, dan
+      // tidak boleh menjadi rejection tak tertangani yang mematikan proses.
+      void this.progress
+        .update(messageId, {
+          ...base,
+          phase: 'MENUNGGU_TERISI',
+          secondsLeft: left,
+        })
+        .catch((err) =>
+          this.logger.debug(`Pembaruan progres dilewati: ${(err as Error).message}`),
+        );
+    }, 15_000);
+
+    try {
+      const result = await this.trading.openManualPosition(pair, 'TELEGRAM_CONFIRM', livePrice);
+
+      if (result.success) {
+        await this.progress.update(messageId, { ...base, phase: 'TERISI' });
+        return `✅ ${result.message}`;
+      }
+
+      if (result.missed) {
+        // Limit maker memang dikirim, hanya tidak tersentuh harga.
+        await this.progress.update(messageId, {
+          ...base,
+          phase: 'TIDAK_TERISI',
+          failedAtPhase: 'MENUNGGU_TERISI',
+        });
+        return '';
+      }
+
+      await this.progress.update(messageId, {
+        ...base,
+        phase: 'DITOLAK',
+        detail: result.message,
+        // Penolakan aturan terjadi sebelum ada order yang dikirim; jangan
+        // menampilkan "Mengirim ke Indodax" sebagai tercapai.
+        failedAtPhase: result.reachedExchange ? 'MENUNGGU_TERISI' : 'MEMERIKSA_RISIKO',
+      });
+      return '';
+    } finally {
+      clearInterval(progressTicker);
+    }
   }
 
-  private async onCancel(pair: string): Promise<string> {
+  private async onCancel(arg: string): Promise<string> {
+    const [pair] = arg.split(':');
     this.pending.delete(pair);
     return `Dilewati: ${pair.toUpperCase()}`;
   }

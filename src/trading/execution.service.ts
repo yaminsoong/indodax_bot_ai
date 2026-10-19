@@ -200,7 +200,14 @@ export class ExecutionService {
     }
 
     // ── Tunggu & konfirmasi fill ────────────────────────────────────────
-    const outcome = await this.waitForFill(pair, orderId, side, referencePrice, style);
+    // Ditandai sebelum menunggu dan dibersihkan setelahnya, apa pun hasilnya.
+    this.inFlightOrders.add(String(orderId));
+    let outcome: ExecutionOutcome;
+    try {
+      outcome = await this.waitForFill(pair, orderId, side, referencePrice, style);
+    } finally {
+      this.inFlightOrders.delete(String(orderId));
+    }
 
     await this.audit.log({
       category: 'ORDER',
@@ -227,6 +234,26 @@ export class ExecutionService {
    * Poll status order sampai terisi atau melewati batas waktu.
    * Sisa yang belum terisi dibatalkan agar dana tidak tertahan.
    */
+  /**
+   * Order yang SEDANG ditunggu proses ini.
+   *
+   * Order maker belum punya catatan di database selama masa tunggunya — ia
+   * baru dicatat setelah terisi. Akibatnya rekonsiliasi tidak bisa membedakan
+   * order yang sedang dikelola bot dari order yatim sisa crash, dan melaporkan
+   * yang pertama sebagai yang kedua.
+   *
+   * Terjadi nyata pada 2026-10-13: order 67278941 berumur 1 menit dilaporkan
+   * ORPHAN_ORDER, lalu dibatalkan bot sendiri empat menit kemudian. Alarm
+   * palsu seperti itu melatih operator mengabaikan peringatan — padahal
+   * sehari sebelumnya ada order yatim SUNGGUHAN yang tampak identik.
+   */
+  private readonly inFlightOrders = new Set<string>();
+
+  /** Dipakai rekonsiliasi agar order yang sedang ditunggu tidak dianggap yatim. */
+  inFlightOrderIds(): ReadonlySet<string> {
+    return this.inFlightOrders;
+  }
+
   private async waitForFill(
     pair: string,
     orderId: string,
