@@ -34,16 +34,16 @@ describe('OrderProgressService', () => {
   it('tahap berjalan ditandai sedang diproses', () => {
     const t = svc.render(state({ phase: 'MENGIRIM_ORDER' }));
     expect(t).toMatch(/SEDANG DIPROSES/);
-    expect(t).toContain('◐ Mengirim ke Indodax');
+    expect(t).toContain('◐ Mengirim pesanan ke Indodax');
     // Langkah sebelumnya sudah tercapai.
-    expect(t).toContain('● Memeriksa risiko');
+    expect(t).toContain('● Memeriksa aman atau tidak');
     // Langkah sesudahnya belum.
-    expect(t).toContain('○ Menunggu terisi');
+    expect(t).toContain('○ Menunggu pesanan dieksekusi');
   });
 
   it('terisi menandai seluruh langkah selesai', () => {
     const t = svc.render(state({ phase: 'TERISI' }));
-    expect(t).toMatch(/POSISI TERBUKA/);
+    expect(t).toMatch(/SUDAH KEBELI/);
     expect(t).not.toContain('○');
     expect(t).not.toContain('◐');
   });
@@ -62,13 +62,13 @@ describe('OrderProgressService', () => {
     );
     expect(t).toMatch(/❌/);
     expect(t).toContain('precision');
-    expect(t).toMatch(/Sebab:/);
+    expect(t).toMatch(/Kenapa:/);
   });
 
   it('terisi sebagian dibedakan dari keduanya', () => {
     const t = svc.render(state({ phase: 'TERISI_SEBAGIAN', filledFraction: 0.4 }));
-    expect(t).toMatch(/TERISI SEBAGIAN/);
-    expect(t).toContain('Terisi    40%');
+    expect(t).toMatch(/KEBELI SEBAGIAN/);
+    expect(t).toContain('Sudah kebeli       40%');
   });
 
   // ─── Konsekuensi terhadap uang harus dinyatakan ──────────────────────────
@@ -76,26 +76,26 @@ describe('OrderProgressService', () => {
   it('saat menunggu, menyatakan dana ditahan tetapi BELUM terpakai', () => {
     // Pembedaan yang penting: dana tertahan bukan dana hilang.
     const t = svc.render(state({ phase: 'MENUNGGU_TERISI' }));
-    expect(t).toMatch(/ditahan sementara/i);
-    expect(t).toMatch(/belum terpakai/i);
+    expect(t).toMatch(/ditahan[\s_]*sementara/i);
+    expect(t).toMatch(/belum[\s_]*benar-benar[\s_]*terpakai/i);
   });
 
   it('saat tidak terisi, menyatakan tidak ada uang terpakai', () => {
-    expect(svc.render(state({ phase: 'TIDAK_TERISI' }))).toMatch(/Tidak ada uang terpakai/i);
+    expect(svc.render(state({ phase: 'TIDAK_TERISI' }))).toMatch(/Tidak ada uang yang terpakai/i);
   });
 
   it('saat ditolak, juga menyatakan tidak ada uang terpakai', () => {
-    expect(svc.render(state({ phase: 'DITOLAK' }))).toMatch(/Tidak ada uang terpakai/i);
+    expect(svc.render(state({ phase: 'DITOLAK' }))).toMatch(/Tidak ada uang yang terpakai/i);
   });
 
   it('saat terisi, menyatakan stop loss sudah terpasang', () => {
-    expect(svc.render(state({ phase: 'TERISI' }))).toMatch(/Stop loss dan take profit sudah dipasang/i);
+    expect(svc.render(state({ phase: 'TERISI' }))).toMatch(/Batas rugi dan target untung/);
   });
 
   it('terisi sebagian menjelaskan sisanya dibatalkan', () => {
     const t = svc.render(state({ phase: 'TERISI_SEBAGIAN', filledFraction: 0.4 }));
     expect(t).toMatch(/Sisanya dibatalkan/i);
-    expect(t).toMatch(/kembali bebas/i);
+    expect(t).toMatch(/kembali bisa dipakai/i);
   });
 
   // ─── Rencana ditampilkan bila sudah dihitung ─────────────────────────────
@@ -114,16 +114,18 @@ describe('OrderProgressService', () => {
         ],
       }),
     );
-    expect(t).toMatch(/Stop loss/);
-    expect(t).toMatch(/TP1/);
-    expect(t).toMatch(/TP2/);
-    expect(t).toMatch(/Risiko/);
+    expect(t).toMatch(/Dijual kalau rugi/);
+    // Label TP kini menyebut maksudnya, bukan singkatannya.
+    expect(t).toMatch(/Dijual kalau untung/);
+    // Dua level target ditampilkan sebagai dua baris "Dijual kalau untung".
+    expect((t.match(/Dijual kalau untung/g) ?? []).length).toBe(2);
+    expect(t).toMatch(/Paling banyak rugi/);
   });
 
   it('tanpa angka, blok rencana tidak ditampilkan sama sekali', () => {
     // Lebih baik tidak menampilkan apa pun daripada menampilkan nol.
     const t = svc.render(state({ phase: 'MEMERIKSA_RISIKO' }));
-    expect(t).not.toMatch(/Stop loss/);
+    expect(t).not.toMatch(/Dijual kalau rugi/);
     expect(t).not.toMatch(/Rp 0/);
   });
 
@@ -185,10 +187,10 @@ describe('OrderProgressService', () => {
         detail: 'Jarak stop 7.18% melebihi batas 6%',
       } as any);
 
-      expect(ikon(t, 'Memeriksa risiko')).toBe('✕');
-      expect(ikon(t, 'Menghitung ukuran')).toBe('○');
-      expect(ikon(t, 'Mengirim ke Indodax')).toBe('○');
-      expect(ikon(t, 'Menunggu terisi')).toBe('○');
+      expect(ikon(t, 'Memeriksa aman atau tidak')).toBe('✕');
+      expect(ikon(t, 'Menghitung mau beli berapa')).toBe('○');
+      expect(ikon(t, 'Mengirim pesanan ke Indodax')).toBe('○');
+      expect(ikon(t, 'Menunggu pesanan dieksekusi')).toBe('○');
     });
 
     it('ditolak sebelum dikirim TIDAK mengklaim order sudah dikirim', () => {
@@ -198,7 +200,7 @@ describe('OrderProgressService', () => {
         failedAtPhase: 'MEMERIKSA_RISIKO',
       } as any);
 
-      const baris = t.split('\n').find((l) => l.includes('Mengirim ke Indodax')) ?? '';
+      const baris = t.split('\n').find((l) => l.includes('Mengirim pesanan ke Indodax')) ?? '';
       expect(baris).not.toMatch(/●/);
     });
 
@@ -210,9 +212,9 @@ describe('OrderProgressService', () => {
         failedAtPhase: 'MENUNGGU_TERISI',
       } as any);
 
-      expect(ikon(t, 'Memeriksa risiko')).toBe('●');
-      expect(ikon(t, 'Mengirim ke Indodax')).toBe('●');
-      expect(ikon(t, 'Menunggu terisi')).toBe('✕');
+      expect(ikon(t, 'Memeriksa aman atau tidak')).toBe('●');
+      expect(ikon(t, 'Mengirim pesanan ke Indodax')).toBe('●');
+      expect(ikon(t, 'Menunggu pesanan dieksekusi')).toBe('✕');
     });
 
     it('gagal di bursa menandai tahap menunggu, bukan pemeriksaan', () => {
@@ -223,25 +225,25 @@ describe('OrderProgressService', () => {
         detail: 'amount has more precision than allowed',
       } as any);
 
-      expect(ikon(t, 'Mengirim ke Indodax')).toBe('●');
-      expect(ikon(t, 'Menunggu terisi')).toBe('✕');
+      expect(ikon(t, 'Mengirim pesanan ke Indodax')).toBe('●');
+      expect(ikon(t, 'Menunggu pesanan dieksekusi')).toBe('✕');
     });
 
     it('tanpa failedAtPhase perilaku lama dipertahankan', () => {
       // Pemanggil lama tidak boleh berubah artinya hanya karena field baru.
       const t = svc.render({ ...base, phase: 'DITOLAK' } as any);
-      expect(ikon(t, 'Menunggu terisi')).toBe('✕');
+      expect(ikon(t, 'Menunggu pesanan dieksekusi')).toBe('✕');
     });
 
     it('nama tahap yang tidak dikenal tidak merusak kartu', () => {
       const t = svc.render({ ...base, phase: 'DITOLAK', failedAtPhase: 'ENTAH' } as any);
-      expect(t).toMatch(/DITOLAK/);
-      expect(t).toMatch(/Memeriksa risiko/);
+      expect(t).toMatch(/TIDAK DIBELI/);
+      expect(t).toMatch(/Memeriksa aman atau tidak/);
     });
 
     it('berhasil tetap menandai seluruh langkah tercapai', () => {
       const t = svc.render({ ...base, phase: 'TERISI' } as any);
-      expect(ikon(t, 'Selesai')).toBe('●');
+      expect(ikon(t, 'Sudah kebeli')).toBe('●');
     });
   });
 });

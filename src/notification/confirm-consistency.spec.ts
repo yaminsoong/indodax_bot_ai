@@ -283,15 +283,16 @@ describe('Konsistensi konfirmasi order', () => {
     });
 
     it('menyebut strategi yang dipakai', async () => {
-      expect(await render()).toMatch(/Strategi: EMA_SCALPING_V2/);
+      expect(await render()).toMatch(/Cara menilai: EMA_SCALPING_V2/);
     });
 
     it('menyebut skor DAN menyatakan skor bukan peluang untung', async () => {
       // Operator yang membaca skor sebagai probabilitas akan menaikkan ukuran
       // posisi pada skor tinggi, padahal skor tidak pernah menjanjikan itu.
       const t = await render();
-      expect(t).toMatch(/Skor kualitas: 72\/100/);
-      expect(t).toMatch(/BUKAN peluang untung/);
+      expect(t).toMatch(/Nilai: 72 dari 100/);
+      // Penegasan yang sama, dalam bahasa yang bisa dibaca tanpa latar trading.
+      expect(t).toMatch(/BUKAN berarti 80% kemungkinan untung/);
     });
 
     it('menyebut alasan kenapa dinilai layak', async () => {
@@ -308,19 +309,19 @@ describe('Konsistensi konfirmasi order', () => {
 
     it('menunjukkan aritmetika ukuran posisi langkah demi langkah', async () => {
       const t = await render();
-      expect(t).toMatch(/Dari mana angkanya/);
-      expect(t).toMatch(/ATR = Rp/);
-      expect(t).toMatch(/Stop = harga − ATR × 2/);
-      expect(t).toMatch(/Jarak stop = Rp/);
-      expect(t).toMatch(/Jatah risiko = 1\.5% dari ekuitas/);
-      expect(t).toMatch(/Ukuran = /);
+      expect(t).toMatch(/Dari mana angka di atas/);
+      expect(t).toMatch(/biasa bergerak Rp/);
+      expect(t).toMatch(/Batas rugi dipasang 2x/);
+      expect(t).toMatch(/Jarak dari harga ke batas rugi/);
+      expect(t).toMatch(/bersedia rugi 1\.5% dari total uang/);
+      expect(t).toMatch(/jumlah yang dibeli/);
     });
 
     it('membedakan uang yang BERISIKO dari uang yang DIPAKAI', async () => {
       // Kekeliruan paling mahal bagi pemula: menganggap seluruh nilai posisi
       // adalah uang yang bisa hilang.
       const t = await render();
-      expect(t).toMatch(/Bila stop kena, yang hilang/);
+      expect(t).toMatch(/Yang hilang kalau batas rugi kena/);
     });
 
     it('ATR tidak terbaca dinyatakan apa adanya, bukan disembunyikan', async () => {
@@ -331,8 +332,8 @@ describe('Konsistensi konfirmasi order', () => {
       });
 
       const t = await render();
-      expect(t).toMatch(/ATR tidak terbaca/);
-      expect(t).toMatch(/stop minimum 0\.8%/);
+      expect(t).toMatch(/Gerakan khas koin ini tidak terbaca/);
+      expect(t).toMatch(/batas minimum 0\.8%/);
     });
 
     it('analisis gagal total tidak menggagalkan kartu', async () => {
@@ -341,8 +342,8 @@ describe('Konsistensi konfirmasi order', () => {
       (svc as any).intelligence.analyze = jest.fn().mockRejectedValue(new Error('mati'));
 
       const t = await render();
-      expect(t).toMatch(/KONFIRMASI ORDER/);
-      expect(t).toMatch(/Dari mana angkanya/);
+      expect(t).toMatch(/PERIKSA DULU SEBELUM BELI/);
+      expect(t).toMatch(/Dari mana angka di atas/);
     });
 
     it('usulan yang DITOLAK menyebut sebabnya, bukan kartu kosong', async () => {

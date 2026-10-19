@@ -297,7 +297,10 @@ describe('Aksi menu Telegram', () => {
     // Operator yang berpikir analis bisa memasang order akan menunggu
     // sesuatu yang tidak akan pernah terjadi.
     await (svc as any).render('analis', 99);
-    expect(teksTerakhir()).toMatch(/TIDAK bisa memasang atau menutup order/);
+    // Bahasanya kini bahasa operator, maksudnya tetap sama: analis hanya
+    // menjelaskan, tidak bisa bertransaksi.
+    expect(teksTerakhir()).toMatch(/hanya MENJELASKAN/);
+    expect(teksTerakhir()).toMatch(/tidak bisa membeli/);
   });
 
   it('keadaan AI mati dinyatakan apa adanya', async () => {

@@ -390,13 +390,23 @@ export class TelegramMenuService implements OnApplicationBootstrap {
 
     try {
       const state = await this.portfolio.getState();
+      /**
+       * Label memakai kata yang dipakai orang, bukan kata akuntansi.
+       *
+       * "Ekuitas" dan "P&L belum terealisasi" benar secara teknis tetapi
+       * tidak memberi tahu apa pun pada pandangan pertama. Yang ingin
+       * diketahui operator selalu tiga hal: totalnya berapa, yang bisa
+       * dipakai berapa, dan sedang untung atau rugi.
+       */
+      const untung = (state.unrealizedPnl ?? 0) >= 0;
       lines.push(
         '```',
-        `  Ekuitas    ${idr(state.equityIdr)}`,
-        `  Kas        ${idr(state.cashIdr)}`,
-        `  Di posisi  ${idr(state.positionsValueIdr)}`,
-        `  P&L belum  ${idr(state.unrealizedPnl)}`,
+        `  Total uang      ${idr(state.equityIdr)}`,
+        `  Bisa dipakai    ${idr(state.cashIdr)}`,
+        `  Sedang dibelikan ${idr(state.positionsValueIdr)}`,
+        `  ${untung ? 'Untung' : 'Rugi'} sementara ${idr(Math.abs(state.unrealizedPnl ?? 0))}`,
         '```',
+        '_"Sementara" = belum jadi uang sampai posisinya ditutup._',
       );
 
       if (state.positions?.length) {
@@ -406,7 +416,7 @@ export class TelegramMenuService implements OnApplicationBootstrap {
             `${naik ? '🟢' : '🔴'} *#${p.tradeId} ${p.pair.toUpperCase()}* — ${idr(p.valueIdr)}`,
             p.priceStale
               ? `    ⚠️ _harga TIDAK terbaca — P&L belum diketahui, bukan 0_`
-              : `    _${naik ? '+' : ''}${p.unrealizedPercent.toFixed(2)}% · ${idr(p.unrealizedPnl)} · ${p.rMultiple >= 0 ? '+' : ''}${p.rMultiple.toFixed(2)}R_`,
+              : `    _${naik ? 'untung' : 'rugi'} ${idr(Math.abs(p.unrealizedPnl))} (${naik ? '+' : ''}${p.unrealizedPercent.toFixed(2)}%)_`,
           );
           buttons.push([
             { label: `❌ Tutup #${p.tradeId} ${p.pair.toUpperCase()}`, data: `tutup:${p.tradeId}` },
@@ -420,9 +430,10 @@ export class TelegramMenuService implements OnApplicationBootstrap {
          */
         lines.push(
           '',
-          '⚠️ _Stop loss DIPANTAU BOT, bukan dipasang di Indodax_',
-          '_(tidak tersedia lewat API mereka). Diperiksa tiap 1 menit —_',
-          '_saat bot mati, posisi di atas tidak terlindungi._',
+          '⚠️ *Batas kerugian dijaga oleh bot ini, bukan oleh Indodax.*',
+          '_Indodax tidak menyediakannya lewat program. Bot memeriksa_',
+          '_harga tiap 1 menit, lalu menjual bila batasnya tertembus._',
+          '_Artinya: kalau bot mati, posisi di atas tidak dijaga._',
         );
       } else {
         lines.push('_Tidak ada posisi terbuka._');
@@ -453,16 +464,27 @@ export class TelegramMenuService implements OnApplicationBootstrap {
       lines.push(`⚠️ Kill switch tidak terbaca: ${(err as Error).message}`, '');
     }
 
+    /**
+     * Tiap batas disebut bersama AKIBATNYA bila tersentuh.
+     *
+     * Daftar angka tanpa akibat tidak bisa dinilai: operator tidak tahu mana
+     * yang menghentikan bot dan mana yang hanya membatasi ukuran.
+     */
     lines.push(
+      '*Batas yang dipasang:*',
       '```',
-      `  Risiko/trade    ${params.riskPerTradePercent}%`,
-      `  Maks posisi     ${params.maxPositionPercent}% ekuitas`,
-      `  Rugi harian     ${params.maxDailyLossPercent}%`,
-      `  Drawdown maks   ${params.maxDrawdownPercent}%`,
-      `  Rugi beruntun   ${params.maxConsecutiveLosses}`,
+      `  Rugi maksimum per beli   ${params.riskPerTradePercent}% dari total uang`,
+      `  Satu beli paling besar   ${params.maxPositionPercent}% dari total uang`,
       '```',
-      '_Jeda hanya menghentikan entry BARU. Stop loss dan_',
-      '_take profit posisi terbuka tetap berjalan._',
+      '*Bot berhenti beli sendiri bila:*',
+      '```',
+      `  Rugi sehari mencapai     ${params.maxDailyLossPercent}%`,
+      `  Turun dari puncak        ${params.maxDrawdownPercent}%`,
+      `  Rugi berturut-turut      ${params.maxConsecutiveLosses} kali`,
+      '```',
+      '_Menjeda hanya menghentikan pembelian BARU._',
+      '_Batas kerugian dan target untung posisi yang sudah_',
+      '_terbuka tetap berjalan seperti biasa._',
     );
 
     // Satu tombol yang berubah mengikuti keadaan: lebih sulit salah tekan
@@ -522,15 +544,17 @@ export class TelegramMenuService implements OnApplicationBootstrap {
         '  /ask kenapa FARTCOIN naik hari ini?',
         '  /ask performa saya sejauh ini gimana',
         '```',
-        '*Yang diketahui analis:*',
-        '  • harga, EMA, RSI, ADX, ATR, order book',
-        '  • berita 48 jam + sentimennya',
-        '  • pasar global: saham, dolar, emas',
-        '  • posisi terbuka beserta P&L-nya',
-        '  • alasan tiap filter menahan entry',
+        '*Yang dia tahu:*',
+        '  • harga sekarang dan arah pergerakannya',
+        '  • seberapa kuat trennya, seberapa liar gerakannya',
+        '  • antrean beli-jual di Indodax',
+        '  • berita 2 hari terakhir, bagus atau buruk',
+        '  • keadaan pasar dunia: saham, dolar, emas',
+        '  • posisi Anda dan untung-ruginya sekarang',
+        '  • sebab bot belum membeli apa pun',
         '',
-        '_Analis TIDAK bisa memasang atau menutup order,_',
-        '_dan tidak memberi perintah beli. Ia menjelaskan._',
+        '_Dia hanya MENJELASKAN. Dia tidak bisa membeli,_',
+        '_menjual, atau menyuruh Anda beli._',
       ].join('\n'),
       buttons: [BACK],
     };
@@ -545,21 +569,26 @@ export class TelegramMenuService implements OnApplicationBootstrap {
         '⚙️ *PENGATURAN*',
         '',
         '```',
-        `  Mode          ${this.config.mode}`,
-        `  Strategi      ${this.config.str('ACTIVE_STRATEGY', 'EMA_SCALPING_V2')}`,
-        `  Pair          ${params.tradingPairs.slice(0, 3).join(', ')}${params.tradingPairs.length > 3 ? '…' : ''}`,
-        `  Timeframe     ${params.candleTimeframe} menit`,
-        `  Entry maker   ${params.makerEntry ? 'ya' : 'tidak'}`,
+        `  Uang yang dipakai  ${live ? 'UANG SUNGGUHAN' : 'latihan (palsu)'}`,
+        `  Cara menilai       ${this.config.str('ACTIVE_STRATEGY', 'EMA_SCALPING_V2')}`,
+        `  Koin yang dipantau ${params.tradingPairs.slice(0, 3).join(', ')}${params.tradingPairs.length > 3 ? '…' : ''}`,
+        `  Dinilai setiap     ${params.candleTimeframe} menit`,
+        `  Cara membeli       ${params.makerEntry ? 'tunggu harga turun' : 'beli harga pasar'}`,
         '```',
+        params.makerEntry
+          ? '_"Tunggu harga turun" = fee lebih murah, tapi bisa tidak kebeli._'
+          : '_"Beli harga pasar" = pasti kebeli, fee dua kali lebih mahal._',
+        '',
+        '*Perintah lain:*',
         '```',
-        '  /config        seluruh parameter',
-        '  /set risk 1.5  ubah tanpa restart',
-        '  /strategy      lihat / ganti strategi',
-        '  /health        kondisi komponen',
+        '  /config        lihat semua setelan',
+        '  /set risk 1.5  ubah tanpa menyalakan ulang',
+        '  /strategy      ganti cara menilai',
+        '  /health        periksa semua bagian bot',
         '```',
         live
-          ? '🔴 _Mode LIVE: order memakai uang sungguhan._'
-          : '🟢 _Mode simulasi: tidak ada yang dipertaruhkan._',
+          ? '🔴 *Sekarang memakai UANG SUNGGUHAN.*'
+          : '🟢 _Sekarang latihan. Tidak ada uang yang berpindah._',
       ].join('\n'),
       buttons: [BACK],
     };

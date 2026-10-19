@@ -42,11 +42,11 @@ export interface OrderProgressState {
 
 /** Urutan tahap yang ditampilkan sebagai jejak langkah. */
 const STEPS: Array<{ phase: OrderPhase; label: string }> = [
-  { phase: 'MEMERIKSA_RISIKO', label: 'Memeriksa risiko' },
-  { phase: 'MENGHITUNG_UKURAN', label: 'Menghitung ukuran' },
-  { phase: 'MENGIRIM_ORDER', label: 'Mengirim ke Indodax' },
-  { phase: 'MENUNGGU_TERISI', label: 'Menunggu terisi' },
-  { phase: 'TERISI', label: 'Selesai' },
+  { phase: 'MEMERIKSA_RISIKO', label: 'Memeriksa aman atau tidak' },
+  { phase: 'MENGHITUNG_UKURAN', label: 'Menghitung mau beli berapa' },
+  { phase: 'MENGIRIM_ORDER', label: 'Mengirim pesanan ke Indodax' },
+  { phase: 'MENUNGGU_TERISI', label: 'Menunggu pesanan dieksekusi' },
+  { phase: 'TERISI', label: 'Sudah kebeli' },
 ];
 
 const TERMINAL: OrderPhase[] = ['TERISI', 'DIBATALKAN', 'TIDAK_TERISI', 'DITOLAK'];
@@ -142,15 +142,15 @@ export class OrderProgressService {
     const p = state.pair.toUpperCase();
     switch (state.phase) {
       case 'TERISI':
-        return `✅ *${p} — POSISI TERBUKA*`;
+        return `✅ *${p} — SUDAH KEBELI*`;
       case 'TERISI_SEBAGIAN':
-        return `◐ *${p} — TERISI SEBAGIAN*`;
+        return `◐ *${p} — KEBELI SEBAGIAN*`;
       case 'TIDAK_TERISI':
-        return `⏳ *${p} — TIDAK TERISI*`;
+        return `⏳ *${p} — TIDAK KEBELI*`;
       case 'DIBATALKAN':
         return `⏹ *${p} — DIBATALKAN*`;
       case 'DITOLAK':
-        return `❌ *${p} — DITOLAK*`;
+        return `❌ *${p} — TIDAK DIBELI*`;
       default:
         return `🔄 *${p} — SEDANG DIPROSES*`;
     }
@@ -166,26 +166,35 @@ export class OrderProgressService {
   private planBlock(state: OrderProgressState): string[] {
     const rows: string[] = [];
 
+    /**
+     * Label menyebut maksudnya, bukan nama bakunya.
+     *
+     * "Stop loss" dan "Risiko" benar secara istilah tetapi tidak menjawab
+     * pertanyaan yang sebenarnya ada di kepala operator: dijual kapan, dan
+     * paling banyak kehilangan berapa.
+     */
     if (state.referencePrice !== undefined) {
-      rows.push(`  Harga     Rp ${fmtPrice(state.referencePrice)}`);
+      rows.push(`  Harga saat ini     Rp ${fmtPrice(state.referencePrice)}`);
     }
     if (state.positionSizeIdr !== undefined) {
-      rows.push(`  Beli      ${idr(state.positionSizeIdr)}`);
+      rows.push(`  Mau dibelikan      ${idr(state.positionSizeIdr)}`);
     }
     if (state.stopLossPrice !== undefined) {
-      rows.push(`  Stop loss Rp ${fmtPrice(state.stopLossPrice)}`);
+      rows.push(`  Dijual kalau rugi  Rp ${fmtPrice(state.stopLossPrice)}`);
     }
     for (const tp of state.takeProfits ?? []) {
-      rows.push(`  TP${tp.level}       Rp ${fmtPrice(tp.price)}  jual ${tp.closePercent}%`);
+      rows.push(
+        `  Dijual kalau untung Rp ${fmtPrice(tp.price)} (${tp.closePercent}%)`,
+      );
     }
     if (state.riskIdr !== undefined) {
-      rows.push(`  Risiko    ${idr(state.riskIdr)}`);
+      rows.push(`  Paling banyak rugi ${idr(state.riskIdr)}`);
     }
     if (state.filledFraction !== undefined && state.filledFraction > 0) {
-      rows.push(`  Terisi    ${(state.filledFraction * 100).toFixed(0)}%`);
+      rows.push(`  Sudah kebeli       ${(state.filledFraction * 100).toFixed(0)}%`);
     }
     if (state.avgFillPrice !== undefined) {
-      rows.push(`  Harga isi Rp ${fmtPrice(state.avgFillPrice)}`);
+      rows.push(`  Kebeli di harga    Rp ${fmtPrice(state.avgFillPrice)}`);
     }
 
     // Tidak ada angka sama sekali: lebih baik tidak menampilkan blok kosong
@@ -203,30 +212,32 @@ export class OrderProgressService {
     switch (state.phase) {
       case 'MENUNGGU_TERISI':
         return [
-          '_Order sudah ada di Indodax. Dana ditahan sementara,_',
-          '_belum terpakai. Laporan ini diperbarui sendiri._',
+          '_Pesanan sudah masuk ke Indodax. Uangnya ditahan_',
+          '_sementara, belum benar-benar terpakai._',
+          '_Pesan ini berubah sendiri kalau ada perkembangan._',
         ];
       case 'TERISI':
         return [
-          '_Stop loss dan take profit sudah dipasang._',
-          '_Bot memantau posisi ini setiap menit._',
+          '_Batas rugi dan target untung sudah dicatat._',
+          '_Bot memeriksa harga koin ini setiap menit._',
         ];
       case 'TERISI_SEBAGIAN':
         return [
-          '_Sebagian terisi dan dilindungi stop loss._',
-          '_Sisanya dibatalkan; dananya kembali bebas._',
+          '_Sebagian sudah kebeli dan sudah dijaga batas ruginya._',
+          '_Sisanya dibatalkan, uangnya kembali bisa dipakai._',
         ];
       case 'TIDAK_TERISI':
         return [
-          '_Tidak ada uang terpakai. Order sudah dibatalkan._',
-          '_Harga tidak sampai ke level order, jadi peluangnya lewat._',
+          '_Tidak ada uang yang terpakai. Pesanan sudah dibatalkan._',
+          '_Harganya tidak turun sampai ke harga yang Anda pasang,_',
+          '_jadi kesempatannya lewat. Bukan kerusakan._',
         ];
       case 'DITOLAK':
         return state.detail
-          ? [`*Sebab:* ${state.detail}`, '', '_Tidak ada uang terpakai._']
-          : ['_Tidak ada uang terpakai._'];
+          ? [`*Kenapa:* ${state.detail}`, '', '_Tidak ada uang yang terpakai._']
+          : ['_Tidak ada uang yang terpakai._'];
       case 'DIBATALKAN':
-        return ['_Order dibatalkan. Dana kembali bebas._'];
+        return ['_Pesanan dibatalkan. Uangnya kembali bisa dipakai._'];
       default:
         return state.detail ? [`_${state.detail}_`] : [];
     }

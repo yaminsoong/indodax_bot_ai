@@ -184,11 +184,16 @@ export class RiskService {
     const openTrades = await this.tradeRepo.find({ where: { status: In(['OPEN', 'PENDING', 'CLOSING']) } });
 
     if (openTrades.length >= params.maxConcurrentTrades) {
-      return deny(`Posisi terbuka sudah maksimum (${openTrades.length}/${params.maxConcurrentTrades})`);
+      return deny(
+        `Sudah ada ${openTrades.length} posisi terbuka, batasnya ${params.maxConcurrentTrades}. ` +
+          'Tutup salah satu dulu bila ingin beli yang ini.',
+      );
     }
 
     if (openTrades.some((t) => t.pair === pair)) {
-      return deny(`Sudah ada posisi terbuka untuk ${pair}`);
+      return deny(
+        `${pair.toUpperCase()} sudah Anda pegang. Bot tidak menambah di koin yang sama.`,
+      );
     }
 
     // ── Batas korelasi ──────────────────────────────────────────────────
@@ -210,7 +215,7 @@ export class RiskService {
 
     // ── Kill switch ─────────────────────────────────────────────────────
     const kill = await this.checkKillSwitch();
-    if (kill.halted) return deny(`Bot dihentikan: ${kill.reasons.join('; ')}`);
+    if (kill.halted) return deny(`Bot sedang menghentikan diri sendiri. Sebabnya: ${kill.reasons.join('; ')}`);
 
     // ── Validasi stop ───────────────────────────────────────────────────
     let stopLossPrice = suggestedStop;
@@ -223,7 +228,10 @@ export class RiskService {
     const stopDistancePercent = ((entryPrice - stopLossPrice) / entryPrice) * 100;
     if (stopDistancePercent > params.maxStopPercent) {
       return deny(
-        `Jarak stop ${stopDistancePercent.toFixed(2)}% melebihi batas ${params.maxStopPercent}%`,
+        `Koin ini bergerak terlalu liar. Supaya tidak kena jual karena gerakan ` +
+        `biasa, batas ruginya harus dipasang ${stopDistancePercent.toFixed(2)}% di bawah ` +
+        `harga — sedangkan setelan Anda hanya mengizinkan ${params.maxStopPercent}%. ` +
+        'Bot memilih tidak beli daripada memasang batas yang pasti kena.',
       );
     }
 
@@ -265,8 +273,10 @@ export class RiskService {
     const info = this.pairs.require(pair);
     if (positionSize < info.minOrderIdr) {
       return deny(
-        `Ukuran posisi ${Math.round(positionSize)} IDR di bawah minimum ${info.minOrderIdr} IDR ` +
-          `(kas ${Math.round(state.cashIdr)} IDR, risiko/trade ${params.riskPerTradePercent}%)`,
+        `Uangnya tidak cukup untuk beli dengan aman. Dengan batas rugi sejauh ini, ` +
+          `bot hanya boleh membelikan Rp ${Math.round(positionSize).toLocaleString('id-ID')} — ` +
+          `sedangkan Indodax mewajibkan minimal Rp ${info.minOrderIdr.toLocaleString('id-ID')}. ` +
+          `Uang bebas Anda Rp ${Math.round(state.cashIdr).toLocaleString('id-ID')}.`,
       );
     }
 
@@ -313,7 +323,9 @@ export class RiskService {
       const riskReward = (takeProfitPrice - entryPrice) / initialRiskPerUnit;
       if (riskReward < params.minRiskReward) {
         return deny(
-          `Rasio imbalan/risiko 1:${riskReward.toFixed(2)} di bawah minimum 1:${params.minRiskReward}`,
+          `Untung yang mungkin didapat cuma ${riskReward.toFixed(2)}x dari yang dipertaruhkan. ` +
+          `Setelan Anda mewajibkan minimal ${params.minRiskReward}x, supaya sekali menang ` +
+          'bisa menutup beberapa kali kalah.',
         );
       }
     }

@@ -10,6 +10,7 @@ import { MarketIntelligenceService } from '../market-intelligence/market-intelli
 import { StrategyRegistry } from '../strategy/strategy.registry';
 import { IndodaxService } from '../indodax/indodax.service';
 import { fmtPrice, idr } from '../common/num';
+import { artiKeputusan, artiKondisi } from './plain-language';
 
 interface PendingOrder {
   /**
@@ -175,22 +176,31 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     });
 
     const text = [
-      `⚠️ *KONFIRMASI ORDER*`,
+      `⚠️ *PERIKSA DULU SEBELUM BELI*`,
       '',
-      `*Pair:* ${pair.toUpperCase()}`,
-      `*Mode:* ${this.config.mode}`,
+      `*Koin:* ${pair.toUpperCase()}`,
+      this.config.mode === 'LIVE'
+        ? '*Uang:* SUNGGUHAN'
+        : '*Uang:* latihan (palsu)',
       '',
-      `*Harga:* Rp ${fmtPrice(price)}`,
-      `*Ukuran:* ${idr(decision.positionSize)} (${decision.quantity.toFixed(8)})`,
-      `*Stop loss:* Rp ${fmtPrice(decision.stopLossPrice)}`,
+      `*Harga sekarang:* Rp ${fmtPrice(price)}`,
+      `*Mau dibelikan:* ${idr(decision.positionSize)}`,
+      `  _dapat ${decision.quantity.toFixed(8)} koin_`,
       '',
-      ...plan.map((l) => `*TP${l.level}:* Rp ${fmtPrice(l.price)} — tutup ${l.closePercent}% (${l.atR}R)`),
+      `*Dijual otomatis kalau rugi,* di Rp ${fmtPrice(decision.stopLossPrice)}`,
+      `  _paling banyak rugi ${idr(decision.riskAmountIdr)}_`,
       '',
-      `*Risiko:* ${idr(decision.riskAmountIdr)}`,
-      `*R:R:* 1 : ${riskReward.toFixed(1)}`,
+      '*Dijual otomatis kalau untung:*',
+      ...plan.map(
+        (l) =>
+          `  Rp ${fmtPrice(l.price)} — jual ${l.closePercent}% dari koinnya`,
+      ),
+      '',
+      `*Kalau target tercapai, untungnya sekitar ${riskReward.toFixed(1)}x dari yang dipertaruhkan.*`,
       ...this.explainBlock(price, atr, decision, report),
       '',
-      `_Usulan ini berlaku 5 menit._`,
+      `_Tawaran ini berlaku 5 menit. Setelah itu harganya_`,
+      `_sudah berubah dan hitungan di atas tidak berlaku lagi._`,
     ].join('\n');
 
     await this.notification.sendWithButtons(text, [
@@ -234,53 +244,58 @@ export class TradeConfirmService implements OnApplicationBootstrap {
     const stopPercent = price > 0 ? (stopGap / price) * 100 : 0;
 
         // Nama strategi dari registry; kunci env 'STRATEGY' tidak pernah ada.
-    out.push('', '*— Strategi & penilaian —*', `Strategi: ${this.strategies.active().name}`);
+    out.push('', '*— Kenapa koin ini —*', `Cara menilai: ${this.strategies.active().name}`);
 
     if (report?.confluence) {
       const c = report.confluence;
       out.push(
-        `Skor kualitas: ${c.score ?? '-'}/100 (${c.decision ?? '-'})`,
-        `Kondisi pasar: ${c.regime ?? '-'}`,
-        // Dinyatakan tegas: skor ini BUKAN peluang untung. Operator yang
-        // membacanya sebagai probabilitas akan menaikkan ukuran posisi pada
-        // skor tinggi, padahal skor tidak pernah menjanjikan itu.
-        '_Skor = kualitas setup menurut aturan, BUKAN peluang untung._',
+        `Nilai: ${c.score ?? '-'} dari 100 — ${artiKeputusan(String(c.decision ?? ''))}`,
+        `Keadaan koin ini: ${artiKondisi(String(c.regime ?? ''))}`,
+        // Dinyatakan tegas: nilai ini BUKAN peluang untung. Operator yang
+        // membacanya sebagai probabilitas akan memperbesar posisi pada nilai
+        // tinggi, padahal nilainya tidak pernah menjanjikan itu.
+        '_Nilai 80 BUKAN berarti 80% kemungkinan untung._',
+        '_Itu hanya seberapa rapi polanya menurut aturan bot._',
       );
     }
 
     const reasons = (report?.explanation?.reasons ?? []).slice(0, 4);
     if (reasons.length) {
-      out.push('', '*— Kenapa dinilai layak —*', ...reasons.map((r) => `• ${r}`));
+      out.push('', '*— Yang mendukung —*', ...reasons.map((r) => `• ${r}`));
     }
 
     const risks = (report?.explanation?.risks ?? []).slice(0, 3);
     if (risks.length) {
-      out.push('', '*— Yang perlu diwaspadai —*', ...risks.map((r) => `• ${r}`));
+      out.push('', '*— Yang bisa menggagalkan —*', ...risks.map((r) => `• ${r}`));
     }
 
-    out.push('', '*— Dari mana angkanya —*');
+    out.push('', '*— Dari mana angka di atas —*');
 
     if (atr && atr > 0) {
       out.push(
-        `1. ATR = Rp ${fmtPrice(atr)} (${((atr / price) * 100).toFixed(2)}% dari harga)`,
-        `   _gejolak khas per bar; stop lebih rapat dari ini akan kena oleh_`,
-        `   _gerakan normal, bukan karena analisanya salah_`,
-        `2. Stop = harga − ATR × ${params.atrStopMultiplier} = Rp ${fmtPrice(decision.stopLossPrice)}`,
+        `1. Koin ini biasa bergerak Rp ${fmtPrice(atr)} per jam`,
+        `   _(${((atr / price) * 100).toFixed(2)}% dari harganya)_`,
+        `   _Batas rugi yang lebih rapat dari ini akan kena oleh_`,
+        `   _gerakan biasa — bukan karena perkiraannya salah._`,
+        `2. Batas rugi dipasang ${params.atrStopMultiplier}x gerakan itu di bawah harga,`,
+        `   jadi Rp ${fmtPrice(decision.stopLossPrice)}`,
       );
     } else {
       out.push(
-        `1. ATR tidak terbaca, dipakai stop minimum ${params.minStopPercent}%`,
-        `2. Stop = Rp ${fmtPrice(decision.stopLossPrice)}`,
+        `1. Gerakan khas koin ini tidak terbaca, dipakai batas minimum ${params.minStopPercent}%`,
+        `2. Batas rugi di Rp ${fmtPrice(decision.stopLossPrice)}`,
       );
     }
 
     out.push(
-      `3. Jarak stop = Rp ${fmtPrice(stopGap)} per koin (${stopPercent.toFixed(2)}%)`,
-      `4. Jatah risiko = ${params.riskPerTradePercent}% dari ekuitas = ${idr(decision.riskAmountIdr)}`,
-      `5. Ukuran = ${idr(decision.riskAmountIdr)} ÷ Rp ${fmtPrice(stopGap)} = ${decision.quantity.toFixed(6)} koin`,
-      `   = ${idr(decision.positionSize)}`,
+      `3. Jarak dari harga ke batas rugi: Rp ${fmtPrice(stopGap)} per koin (${stopPercent.toFixed(2)}%)`,
+      `4. Anda bersedia rugi ${params.riskPerTradePercent}% dari total uang = ${idr(decision.riskAmountIdr)}`,
+      `5. Jadi jumlah yang dibeli = ${idr(decision.riskAmountIdr)} ÷ Rp ${fmtPrice(stopGap)}`,
+      `   = ${decision.quantity.toFixed(6)} koin, senilai ${idr(decision.positionSize)}`,
       '',
-      `_Bila stop kena, yang hilang ${idr(decision.riskAmountIdr)} — bukan ${idr(decision.positionSize)}._`,
+      `*Yang hilang kalau batas rugi kena: ${idr(decision.riskAmountIdr)}.*`,
+      `_Bukan ${idr(decision.positionSize)}. Yang ${idr(decision.positionSize)} itu_`,
+      '_uang yang dibelikan koin, dan koinnya dijual kembali._',
     );
 
     /**
@@ -300,14 +315,15 @@ export class TradeConfirmService implements OnApplicationBootstrap {
      */
     out.push(
       '',
-      '*— Cara stop loss bekerja —*',
-      '⚠️ Stop *DIPANTAU BOT*, bukan dipasang di Indodax.',
-      '  Indodax tidak menyediakannya lewat API.',
-      '  Harga diperiksa tiap 1 menit; bila stop tertembus,',
-      '  bot mengirim order jual pasar.',
+      '*— Siapa yang menjaga batas rugi —*',
+      '⚠️ *Bot ini, bukan Indodax.*',
+      '  Indodax tidak menyediakan penjagaan otomatis',
+      '  lewat program. Bot memeriksa harga tiap 1 menit,',
+      '  lalu menjual bila batasnya tertembus.',
       '',
-      '  Artinya: *saat bot mati, posisi ini tidak terlindungi.*',
-      '  Gerakan tajam dalam 1 menit juga bisa terlewat.',
+      '  *Artinya: kalau bot mati, posisi ini tidak dijaga.*',
+      '  Kalau harga jatuh sangat cepat dalam 1 menit,',
+      '  jualnya juga bisa kebagian harga yang lebih rendah.',
     );
 
     return out;
