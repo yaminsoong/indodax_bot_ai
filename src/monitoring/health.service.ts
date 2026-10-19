@@ -231,12 +231,29 @@ export class HealthService {
       );
     }
 
+    /**
+     * Pair tanpa riwayat chart BUKAN kerusakan bot.
+     *
+     * Sebagian pair aktif di Indodax tidak punya riwayat di endpoint chart —
+     * terukur pada SHOWIDR: volume Rp878 juta dan harga bergerak 6,85%,
+     * tetapi 0 candle untuk semua timeframe. Melaporkannya sebagai komponen
+     * "degraded" membuat health check berwarna kuning tanpa akhir untuk
+     * sesuatu yang tidak bisa dan tidak perlu diperbaiki — dan peringatan
+     * yang tidak pernah hilang akan diabaikan saat benar-benar ada masalah.
+     *
+     * Disebutkan sebagai keterangan pada status OK, bukan sebagai gangguan.
+     */
     const empty = ages.filter((a) => a.bars === 0);
     if (empty.length) {
-      return this.degraded(
+      return this.ok(
         'Market Data',
-        'SEBAGIAN KOSONG',
-        `${empty.length} entri candle kosong: ${empty.map((e) => e.key).join(', ')}`,
+        'ONLINE',
+        `${ages.length - empty.length} set candle siap. ` +
+          `${empty.length} pair tanpa riwayat chart di Indodax (bukan gangguan bot): ` +
+          empty
+            .map((e) => e.key.split('|')[0])
+            .filter((v, i, a) => a.indexOf(v) === i)
+            .join(', '),
       );
     }
 

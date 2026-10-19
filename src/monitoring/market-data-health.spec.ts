@@ -124,15 +124,22 @@ describe('Health check data pasar', () => {
     expect(r.label).toBe('BELUM ADA DATA');
   });
 
-  it('entri tanpa bar dilaporkan sebagai sebagian kosong', async () => {
+  it('pair tanpa riwayat chart BUKAN gangguan, hanya diterangkan', async () => {
+    // Sebagian pair aktif di Indodax memang tidak punya riwayat chart —
+    // terukur pada SHOWIDR: volume Rp878 juta, naik 6,85%, tetapi 0 candle.
+    // Melaporkannya sebagai gangguan membuat health kuning selamanya untuk
+    // sesuatu yang tidak bisa diperbaiki, dan peringatan yang tak pernah
+    // hilang akan diabaikan saat benar-benar ada masalah.
     marketData.cacheAges.mockReturnValue([
       entri('btcidr|1H', 30, 300),
-      entri('xlmidr|5m', 40, 0),
+      entri('showidr|5m', 40, 0),
     ]);
 
     const r = await periksa();
-    expect(r.label).toBe('SEBAGIAN KOSONG');
-    expect(r.detail).toMatch(/xlmidr\|5m/);
+    expect(r.status).toBe('OK');
+    expect(r.detail).toMatch(/tanpa riwayat chart/);
+    expect(r.detail).toMatch(/bukan gangguan bot/);
+    expect(r.detail).toMatch(/showidr/);
   });
 
   it('macet diperiksa LEBIH DULU daripada entri kosong', async () => {
